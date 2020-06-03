@@ -54,6 +54,8 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
         if !db_name.is_empty() {
             db = db.set_db_name(db_name);
         }
+
+        println!("Checking database migrations...");
         let report = migrations::runner().run(&mut db)?;
         let migrations = report.applied_migrations();
         if migrations.is_empty() {
