@@ -25,6 +25,8 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
  - `cargo test` – run integration and unit tests
 
 ### Libraries for X:
- - __surf:__ http client
- - __sqlx:__ database client
- - __async-std:__ async IO (files, sockets, etc)
+Links to online documentation for important libraries (almost always on `docs.rs/<CRATE>`). 
+
+ - std lib: [std](https://doc.rust-lang.org/std/)
+ - http client: [surf](https://docs.rs/surf)
+ - database client: [sqlx](https://docs.rs/sqlx)
