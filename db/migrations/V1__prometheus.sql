@@ -41,10 +41,18 @@ CREATE SCHEMA prometheus_series;
 -- );
 
 -- CREATE TABLE prometheus_series.values___<METRIC_NAME>
---     values bytea NOT NULL,
+--     id bigserial PRIMARY KEY,
 --     labels_id int NOT NULL,
---     min_timestamp timestamp,
---     max_timestamp timestamp,
---     WITH toast_tuple_target(100)
+--     min_timestamp timestamp NOT NULL,
+--     max_timestamp timestamp NOT NULL,
+--     timestamps bytea NOT NULL
+--     values bytea NOT NULL,
+--
+--     WITH toast_tuple_target(64)
 -- );
--- ALTER TABLE prometheus_series.values___<METRIC_NAME> ALTER COLUMN values SET STORAGE EXTERNAL;
+-- ALTER TABLE prometheus_series.values___<METRIC_NAME>
+--   ALTER COLUMN values SET STORAGE EXTERNAL
+--   ALTER COLUMN values SET STORAGE EXTERNAL
+-- ;
+-- CREATE INDEX values___timestamps_idx ON prometheus_series.values__<METRIC_NAME> (max_timestamp DESC, min_timestamp DESC);
+-- CREATE INDEX values___labels_idx ON prometheus_series.values__<METRIC_NAME> (labels_id, max_timestamp DESC, min_timestamp DESC);
