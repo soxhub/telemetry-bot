@@ -33,13 +33,21 @@ How do I do `X` in this rust project?
    kubectl port-forward -n monitoring service/prometheus-operator-prometheus 9090:9090
    ```
 
-### Commands
+### Workflow
+Common rust commands:
 
  - `cargo run` – run (like a script) with debug symbols
  - `cargo build` – compile with debug symbols (for use with a debugger); outputs to `target/debug/telemetry-bot`
  - `cargo build --release` – compile optimized build for production; outputs to `target/release/telemetry-bot`
  - `cargo doc --open` – build and open API docs for this project and all of its dependencies
  - `cargo test` – run integration and unit tests
+ 
+To reset the database:
+
+```sh
+dropdb telemetry -U postgres
+createdb telemetry --owner=postgres -U postgres
+```
 
 ### Libraries for X:
 Links to online documentation for important libraries (almost always on `docs.rs/<CRATE>`). 
