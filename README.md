@@ -10,11 +10,28 @@ to a compact Postgres-based time series database.
 How do I do `X` in this rust project?
 
 ### Setup Environment
-Install Rust via curl-pipe:
 
-```sh
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
+1. Install Rust via curl-pipe
+
+   ```sh
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+   ```
+
+2. Create a development database
+
+    ```sh
+    createdb telemetry --owner=postgres -U postgres
+    ```
+
+3. Configure local prometheus:
+
+   __Option A:__ _(TODO: Implement this)_ Run prometheus locally with docker-compose
+
+   __Option B:__ Port forward to prometheus on a kubernetes cluster:
+
+   ```sh
+   kubectl port-forward -n monitoring service/prometheus-operator-prometheus 9090:9090
+   ```
 
 ### Commands
 

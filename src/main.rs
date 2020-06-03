@@ -33,6 +33,7 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
         .max_size(1)
         .build(&db_url)
         .await?;
+    println!("Connected to {}", db_url);
 
     // Scrape prometheus metric values at most every 5 minutes
     const INTERVAL: Duration = Duration::from_secs(5 * 60);
@@ -40,7 +41,7 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
         let started_at = Instant::now();
 
 
-        // Don't start another query until at least INTERVAL has passed since we started
+        // Don't start another query until at least INTERVAL seconds have passed since we started
         if let Some(sleep_dur) = INTERVAL.checked_sub(started_at.elapsed()) {
             futures::select! {
                 _ = async_std::task::sleep(sleep_dur).fuse() => (),
