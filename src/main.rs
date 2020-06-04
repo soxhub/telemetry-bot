@@ -1,8 +1,9 @@
 //! Telemetry Bot
 
+mod encoding;
 mod migrations;
 mod prometheus_api;
-mod timeseries;
+mod prometheus_timeseries;
 
 use anyhow::{Context, Result}; // alias std::result::Result with dynamic error type
 use futures::channel::oneshot;
@@ -78,7 +79,7 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
     println!("Connected to {}", db_url);
 
     // Open a exporter
-    let mut exporter = timeseries::PrometheusExporter::new(db, prom_url);
+    let mut exporter = prometheus_timeseries::PrometheusExporter::new(db, prom_url);
     exporter.restore_schema().await?;
 
     // Scrape prometheus metric values at most every 5 minutes

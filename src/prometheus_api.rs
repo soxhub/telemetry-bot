@@ -28,7 +28,7 @@ fn extract(path: &'static str, mut value: Value) -> Response {
     if value["status"].as_str() == Some("success") {
         Ok(value["data"].take())
     } else {
-        let error_type = value["error_type"].as_str().unwrap_or("unknown").into();
+        let error_type = value["errorType"].as_str().unwrap_or("unknown").into();
         let error = value["error"]
             .as_str()
             .unwrap_or("an error occurred without an error message")
@@ -41,16 +41,16 @@ fn extract(path: &'static str, mut value: Value) -> Response {
     }
 }
 
-/// Return all labels defined in prometheus
-pub async fn labels<'a>(prom_url: &'a str) -> Response {
-    let path = "/api/v1/labels";
-    let request_url = format!("{}{}", prom_url, path);
-    let response = surf::get(request_url)
-        .recv_json()
-        .await
-        .map_err(|err| RequestError::from_http(path, err))?;
-    extract(path, response)
-}
+// /// Return all labels defined in prometheus
+// pub async fn labels<'a>(prom_url: &'a str) -> Response {
+//     let path = "/api/v1/labels";
+//     let request_url = format!("{}{}", prom_url, path);
+//     let response = surf::get(request_url)
+//         .recv_json()
+//         .await
+//         .map_err(|err| RequestError::from_http(path, err))?;
+//     extract(path, response)
+// }
 
 /// Returns all metrics defined in prometheus
 pub async fn metadata<'a>(prom_url: &'a str) -> Response {
@@ -67,14 +67,14 @@ pub async fn metadata<'a>(prom_url: &'a str) -> Response {
 pub async fn query_range<'a>(
     prom_url: &'a str,
     query: &'a str,
-    start: DateTime<Utc>,
-    end: DateTime<Utc>,
+    start: NaiveDateTime,
+    end: NaiveDateTime,
     // e.g. '1m' for one minute
     timeout: &'static str,
 ) -> Response {
     let path = "/api/v1/query_range";
     let request_url = format!(
-        "{}{}?query={}&start={}&end={}&timeout={}",
+        "{}{}?query={}&start={}&end={}&timeout={}&step=1s",
         prom_url,
         path,
         query,
