@@ -10,8 +10,8 @@ CREATE TABLE public.prometheus_metrics (
 -- Unique label names
 CREATE TABLE public.prometheus_label_keys (
     id serial PRIMARY KEY,
-    key text NOT NULL,
-    UNIQUE(key)
+    label text NOT NULL,
+    UNIQUE(label)
 );
 
 -- Unique label values
@@ -52,7 +52,7 @@ CREATE SCHEMA prometheus_series;
 --     WITH toast_tuple_target(64)
 -- );
 -- ALTER TABLE prometheus_series.values___<METRIC_NAME>
---   ALTER COLUMN values SET STORAGE EXTERNAL
+--   ALTER COLUMN timestamps SET STORAGE EXTERNAL
 --   ALTER COLUMN values SET STORAGE EXTERNAL
 -- ;
 -- CREATE INDEX values___timestamps_idx ON prometheus_series.values__<METRIC_NAME> (max_timestamp DESC, min_timestamp DESC);

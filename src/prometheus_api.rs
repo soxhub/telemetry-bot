@@ -4,7 +4,7 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum RequestError {
-    #[error("in {}: {}: {}", .path, .error_type, .error)]
+    #[error("Prometheus Api: in {}: {}: {}", .path, .error_type, .error)]
     Failed {
         path: &'static str,
         error_type: String,
@@ -16,7 +16,7 @@ impl RequestError {
     fn from_http(path: &'static str, err: surf::Error) -> Self {
         RequestError::Failed {
             path,
-            error_type: "http error".into(),
+            error_type: "Http Error".into(),
             error: err.to_string(),
         }
     }

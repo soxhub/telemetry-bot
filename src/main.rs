@@ -1,8 +1,8 @@
 //! Telemetry Bot
 
-mod export;
 mod migrations;
 mod prometheus_api;
+mod timeseries;
 
 use anyhow::{Context, Result}; // alias std::result::Result with dynamic error type
 use futures::channel::oneshot;
@@ -36,7 +36,7 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
     {
         use refinery::config::{Config, ConfigDbType};
 
-        // Parse the DATABASE_URL param and pass it to Refinery's builder api
+        // Parse the DATABASE_URL param and pass it to refinery's connection builder api
         let url = url::Url::parse(&db_url).context("invalid DATABASE_URL")?;
         let mut db = Config::new(ConfigDbType::Postgres);
         if !url.username().is_empty() {
@@ -56,6 +56,7 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
             db = db.set_db_name(db_name);
         }
 
+        // Run migrations
         println!("Checking database migrations...");
         let report = migrations::runner().run(&mut db)?;
         let migrations = report.applied_migrations();
@@ -76,8 +77,9 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
         .await?;
     println!("Connected to {}", db_url);
 
-    // Open an exporter
-    let mut exporter = export::Exporter::new(db, prom_url);
+    // Open a exporter
+    let mut exporter = timeseries::PrometheusExporter::new(db, prom_url);
+    exporter.restore_schema().await?;
 
     // Scrape prometheus metric values at most every 5 minutes
     const INTERVAL: Duration = Duration::from_secs(5 * 60);
