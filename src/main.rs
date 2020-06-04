@@ -1,5 +1,6 @@
 //! Telemetry Bot
 
+mod export;
 mod migrations;
 mod prometheus_api;
 
@@ -31,7 +32,7 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
     let prom_url = dotenv::var("PROMETHEUS_URL").context("missing PROMETHEUS_URL")?;
     let db_url = dotenv::var("DATABASE_URL").context("missing DATABASE_URL")?;
 
-    // Ensure we have run our database migrations
+    // Run any outstanding database migrations
     {
         use refinery::config::{Config, ConfigDbType};
 
@@ -75,17 +76,25 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
         .await?;
     println!("Connected to {}", db_url);
 
+    // Open an exporter
+    let mut exporter = export::Exporter::new(db, prom_url);
+
     // Scrape prometheus metric values at most every 5 minutes
     const INTERVAL: Duration = Duration::from_secs(5 * 60);
-    loop {
+    'shutdown: loop {
         let started_at = Instant::now();
 
+        // Run the exporter once
+        futures::select! {
+            ok = exporter.run().fuse() => ok?,
+            _ = shutdown => break 'shutdown,
+        };
 
         // Don't start another query until at least INTERVAL seconds have passed since we started
         if let Some(sleep_dur) = INTERVAL.checked_sub(started_at.elapsed()) {
             futures::select! {
                 _ = async_std::task::sleep(sleep_dur).fuse() => (),
-                _ = shutdown => break,
+                _ = shutdown => break 'shutdown,
             };
         }
     }

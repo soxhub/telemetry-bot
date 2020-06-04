@@ -3,6 +3,7 @@
 CREATE TABLE public.prometheus_metrics (
     id serial PRIMARY KEY,
     name text NOT NULL,
+    type text NOT NULL,
     UNIQUE(name)
 );
 
