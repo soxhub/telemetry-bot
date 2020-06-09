@@ -1,5 +1,7 @@
 //! Telemetry Bot
 
+mod scrape;
+
 use anyhow::{Context, Result}; // alias std::result::Result with dynamic error type
 use futures::channel::oneshot;
 use std::cell::Cell;
