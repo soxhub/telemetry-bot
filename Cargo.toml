@@ -11,12 +11,20 @@ members = [
 
 [dependencies]
 anyhow = "1.0.31"
+arc-swap = "0.4.7"
 async-std = { version = "1.5.0" }
 chrono = "0.4.11"
 ctrlc = { version = "3.1.4", features = ["termination"] } # handle SIGINT (and SIGTERM)
 dotenv = "0.15.0"
 futures = "0.3.5"
+k8s-openapi = { version = "0.8.0", features = ["v1_18"] }
 serde = "1.0.111"
 serde_json = "1.0.53"
 sqlx = { version = "0.3.5", features = ["chrono", "json", "postgres"] }
 surf = { version = "2.0.0-alpha.3", default_features = false, features = ["encoding", "h1-client"] }
+
+# Enable comaptiblility with `http` types for `surf` (to be used with k8s-openapi)
+http-types = { version="2.2.0", features = ["hyperium_http"] }
+http-client = "3.0.0"
+http = "0.2.1"
+parallel-stream = "2.1.1"

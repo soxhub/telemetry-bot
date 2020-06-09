@@ -1,25 +1,23 @@
-#![allow(dead_code)]
-
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-enum NumType {
-    F64,
-    I64,
-}
-enum Number {
+use crate::series::SeriesType;
+
+pub enum Number {
     F64(f64),
     I64(i64),
 }
-struct Measurement<'a> {
-    name: &'a str,
-    labels: Vec<(&'a str, Cow<'a, str>)>,
-    value: Number,
-    timestamp: Option<u64>,
+
+/// A single measurement for a metric at a particular timestamp (or "now")
+pub struct Measurement<'a> {
+    pub name: &'a str,
+    pub labels: Vec<(&'a str, Cow<'a, str>)>,
+    pub value: Number,
+    pub timestamp: Option<u64>,
 }
 
 /// A parser for Prometheus's text exposition format.
-fn parse_prometheus_text(input: &str) -> Vec<Measurement> {
+pub fn parse(input: &str) -> (HashMap<Cow<str>, SeriesType>, Vec<Measurement>) {
     let mut values = Vec::new();
     let mut metrics = HashMap::new();
     let mut continue_help = false;
@@ -43,20 +41,20 @@ fn parse_prometheus_text(input: &str) -> Vec<Measurement> {
             };
             match type_str {
                 "counter" => {
-                    metrics.insert(name.into(), NumType::I64);
+                    metrics.insert(name.into(), SeriesType::Counter);
                 }
                 "gauge" => {
-                    metrics.insert(name.into(), NumType::F64);
+                    metrics.insert(name.into(), SeriesType::Gauge);
                 }
                 "summary" => {
-                    metrics.insert(name.into(), NumType::I64);
-                    metrics.insert(format!("{}_count", name).into(), NumType::I64);
-                    metrics.insert(format!("{}_sum", name).into(), NumType::F64);
+                    metrics.insert(name.into(), SeriesType::Counter);
+                    metrics.insert(format!("{}_count", name).into(), SeriesType::Counter);
+                    metrics.insert(format!("{}_sum", name).into(), SeriesType::Gauge);
                 }
                 "histogram" => {
-                    metrics.insert(format!("{}_bucket", name).into(), NumType::I64);
-                    metrics.insert(format!("{}_count", name).into(), NumType::I64);
-                    metrics.insert(format!("{}_sum", name).into(), NumType::F64);
+                    metrics.insert(format!("{}_bucket", name).into(), SeriesType::Counter);
+                    metrics.insert(format!("{}_count", name).into(), SeriesType::Counter);
+                    metrics.insert(format!("{}_sum", name).into(), SeriesType::Gauge);
                 }
                 _ => (),
             }
@@ -73,11 +71,11 @@ fn parse_prometheus_text(input: &str) -> Vec<Measurement> {
             values.push(value);
         }
     }
-    values
+    (metrics, values)
 }
 
 fn parse_value<'i>(
-    metric_types: &HashMap<Cow<str>, NumType>,
+    metric_types: &HashMap<Cow<str>, SeriesType>,
     line: &'i str,
 ) -> Option<Measurement<'i>> {
     // Split `metric_name{labels} value timestamp` into parts
@@ -131,8 +129,8 @@ fn parse_value<'i>(
     }
 
     let value = match metric_types.get(name)? {
-        NumType::I64 => Number::I64(value_str.trim().parse().ok()?),
-        NumType::F64 => Number::F64(value_str.trim().parse().ok()?),
+        SeriesType::Counter => Number::I64(value_str.trim().parse().ok()?),
+        SeriesType::Gauge => Number::F64(value_str.trim().parse().ok()?),
     };
 
     let timestamp = match unix_str {
@@ -177,7 +175,10 @@ fn parse_label_value(value: &str) -> (Cow<str>, usize) {
     } else {
         let mut iter = value[1..].split('"');
         let substr = iter.next().unwrap_or("");
-        (substr.into(), 1 + substr.len() + if iter.next().is_some() { 1 } else { 0 })
+        (
+            substr.into(),
+            1 + substr.len() + if iter.next().is_some() { 1 } else { 0 },
+        )
     }
 }
 
@@ -186,8 +187,8 @@ mod test {
     use super::*;
 
     #[test]
-    fn parses_prometheus_text() {
-        let values = parse_prometheus_text(
+    fn parses_text_format() {
+        let (metrics, values) = parse(
             r#"
 # HELP http_requests_total The total number of HTTP requests.
 # TYPE http_requests_total counter
