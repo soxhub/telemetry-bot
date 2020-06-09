@@ -1,6 +1,6 @@
 # Telemetry Bot
-A telemetry exporter that scrapes Prometheus and Jaeger and saves it  
-to a compact Postgres-based time series database.
+A telemetry exporter that scrapes Prometheus `/metrics` endpoints
+and Jaeger api and exports timeseries to TimescaleDB.
 
 ![Fact Core](doc/bot.png)
 
@@ -47,6 +47,7 @@ To reset the database:
 ```sh
 dropdb telemetry -U postgres
 createdb telemetry --owner=postgres -U postgres
+cargo run -p telemetry-migrate
 ```
 
 ### Libraries for X:

@@ -4,9 +4,13 @@ version = "0.1.0"
 authors = ["Kevin Stenerson <kstenerson@auditboard.com>"]
 edition = "2018"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[workspace]
+members = [
+    "db",
+]
 
 [dependencies]
+anyhow = "1.0.31"
 async-std = { version = "1.5.0" }
 chrono = "0.4.11"
 ctrlc = { version = "3.1.4", features = ["termination"] } # handle SIGINT (and SIGTERM)
@@ -14,14 +18,5 @@ dotenv = "0.15.0"
 futures = "0.3.5"
 serde = "1.0.111"
 serde_json = "1.0.53"
-surf = { version = "2.0.0-alpha.3", default_features = false, features = ["encoding", "h1-client"] }
-unsigned-varint = "0.4.0"
-url = "2.1.1"
-
-# Database
 sqlx = { version = "0.3.5", features = ["chrono", "json", "postgres"] }
-refinery = { version = "0.3.0", features = ["postgres"] }
-
-# Error Handling
-anyhow = "1.0.31"
-thiserror = "1.0.19"
+surf = { version = "2.0.0-alpha.3", default_features = false, features = ["encoding", "h1-client"] }

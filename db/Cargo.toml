@@ -1,0 +1,11 @@
+[package]
+name = "telemetry-migrate"
+version = "0.1.0"
+authors = ["Kevin Stenerson <kstenerson@auditboard.com>"]
+edition = "2018"
+
+[dependencies]
+anyhow = "1.0.31"
+dotenv = "0.15.0"
+refinery = { version = "0.3.0", features = ["postgres"] }
+url = "2.1.1"
