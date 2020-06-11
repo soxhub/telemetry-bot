@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use crate::series::SeriesType;
+use crate::schema::SeriesType;
 
 pub enum Number {
     F64(f64),
@@ -13,7 +13,7 @@ pub struct Measurement<'a> {
     pub name: &'a str,
     pub labels: Vec<(&'a str, Cow<'a, str>)>,
     pub value: Number,
-    pub timestamp: Option<u64>,
+    pub timestamp: Option<i64>,
 }
 
 /// A parser for Prometheus's text exposition format.
@@ -48,13 +48,16 @@ pub fn parse(input: &str) -> (HashMap<Cow<str>, SeriesType>, Vec<Measurement>) {
                 }
                 "summary" => {
                     metrics.insert(name.into(), SeriesType::Counter);
-                    metrics.insert(format!("{}_count", name).into(), SeriesType::Counter);
-                    metrics.insert(format!("{}_sum", name).into(), SeriesType::Gauge);
+                    metrics.insert(format!("{}_count", name).into(), SeriesType::CounterInteger);
+                    metrics.insert(format!("{}_sum", name).into(), SeriesType::Counter);
                 }
                 "histogram" => {
-                    metrics.insert(format!("{}_bucket", name).into(), SeriesType::Counter);
-                    metrics.insert(format!("{}_count", name).into(), SeriesType::Counter);
-                    metrics.insert(format!("{}_sum", name).into(), SeriesType::Gauge);
+                    metrics.insert(
+                        format!("{}_bucket", name).into(),
+                        SeriesType::CounterInteger,
+                    );
+                    metrics.insert(format!("{}_count", name).into(), SeriesType::CounterInteger);
+                    metrics.insert(format!("{}_sum", name).into(), SeriesType::Counter);
                 }
                 _ => (),
             }
@@ -129,8 +132,10 @@ fn parse_value<'i>(
     }
 
     let value = match metric_types.get(name)? {
-        SeriesType::Counter => Number::I64(value_str.trim().parse().ok()?),
-        SeriesType::Gauge => Number::F64(value_str.trim().parse().ok()?),
+        SeriesType::Counter | SeriesType::Gauge => Number::F64(value_str.trim().parse().ok()?),
+        SeriesType::CounterInteger | SeriesType::GaugeInteger => {
+            Number::I64(value_str.trim().parse().ok()?)
+        }
     };
 
     let timestamp = match unix_str {
