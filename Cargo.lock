@@ -907,6 +907,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "migrate"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dotenv",
+ "refinery",
+ "url",
+]
+
+[[package]]
 name = "mime"
 version = "0.3.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1842,16 +1852,6 @@ dependencies = [
  "serde_json",
  "sqlx",
  "surf",
-]
-
-[[package]]
-name = "telemetry-migrate"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "dotenv",
- "refinery",
- "url",
 ]
 
 [[package]]
