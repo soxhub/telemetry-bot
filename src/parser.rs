@@ -41,7 +41,7 @@ pub fn parse(input: &str) -> (HashMap<Cow<str>, SeriesType>, Vec<Measurement>) {
             };
             match type_str {
                 "counter" => {
-                    metrics.insert(name.into(), SeriesType::Counter);
+                    metrics.insert(name.into(), SeriesType::CounterInteger); // maybe not a good assumption; but 😬
                 }
                 "gauge" => {
                     metrics.insert(name.into(), SeriesType::Gauge);
@@ -193,7 +193,7 @@ mod test {
 
     #[test]
     fn parses_text_format() {
-        let (metrics, values) = parse(
+        let (_, values) = parse(
             r#"
 # HELP http_requests_total The total number of HTTP requests.
 # TYPE http_requests_total counter
