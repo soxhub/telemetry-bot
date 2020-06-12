@@ -19,11 +19,13 @@ use std::time::{Duration, Instant};
 
 use crate::schema::*;
 
-/// How frequently to update our pod list
-const WATCH_INTERVAL: Duration = Duration::from_secs(30);
+/// How frequently to update our pod list.
+/// Use the `WATCH_INTERVAL` env var to override.
+const DEFAULT_WATCH_INTERVAL: Duration = Duration::from_secs(30);
 
 /// How frequently to collect metric timeseries data
-const SCRAPE_INTERVAL: Duration = Duration::from_secs(15);
+/// Use the `SCRAPE_INTERVAL` env var to override.
+const DEFAULT_SCRAPE_INTERVAL: Duration = Duration::from_secs(15);
 
 /// How long to wait before skipping a scrape endpoint
 const SCRAPE_TIMEOUT: Duration = Duration::from_secs(1);
@@ -46,6 +48,20 @@ fn main() -> Result<()> {
 
 /// The main thread's event loop
 async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
+    let watch_interval_secs = match dotenv::var("WATCH_INTERVAL").ok() {
+        None => DEFAULT_WATCH_INTERVAL,
+        Some(val) => {
+            let secs = val.parse().context("invalid WATCH_INTERVAL")?;
+            Duration::from_secs(secs)
+        }
+    };
+    let scrape_interval_secs = match dotenv::var("SCRAPE_INTERVAL").ok() {
+        None => DEFAULT_SCRAPE_INTERVAL,
+        Some(val) => {
+            let secs = val.parse().context("invalid SCRAPE_INTERVAL")?;
+            Duration::from_secs(secs)
+        }
+    };
     let max_concurrency: usize = match dotenv::var("SCRAPE_CONCURRENCY").ok() {
         Some(val) => val.parse().context("invalid SCRAPE_CONCURRENCY")?,
         None => 128,
@@ -86,7 +102,7 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
     let watch_interval = {
         let pods = pods.clone();
         async_std::task::spawn(async move {
-            let mut interval = async_std::stream::interval(WATCH_INTERVAL);
+            let mut interval = async_std::stream::interval(watch_interval_secs);
             while let Some(_) = interval.next().await {
                 if let Err(_) = pods.update().await {
                     // TODO: Log or something
@@ -114,7 +130,7 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
                 .await;
 
             // Sleep until the next scrape interval
-            if let Some(delay) = SCRAPE_INTERVAL.checked_sub(start.elapsed()) {
+            if let Some(delay) = scrape_interval_secs.checked_sub(start.elapsed()) {
                 async_std::task::sleep(delay).await;
             }
         }
@@ -147,9 +163,10 @@ async fn scrape_once(
             let mut table: Option<&'static SeriesTable> = (*tables.read()).get(key).copied();
             if table.is_none() {
                 if let Some(type_) = metrics.get(value.name) {
-                    tables.write().entry(key.to_string()).or_insert_with(|| {
-                        Box::leak(Box::new(define_series(*type_, &target, &value)))
-                    });
+                    tables
+                        .write()
+                        .entry(key.to_string())
+                        .or_insert_with(|| Box::leak(Box::new(define_series(*type_, &value))));
                     table = (*tables.read()).get(key).copied();
                 }
             }
@@ -164,7 +181,7 @@ async fn scrape_once(
     }
 }
 
-fn define_series(type_: SeriesType, data: &parser::Measurement,) -> SeriesTable {
+fn define_series(type_: SeriesType, data: &parser::Measurement) -> SeriesTable {
     let name = data.name.to_owned();
 
     // Postgres table names have a max length of 63 characters.
