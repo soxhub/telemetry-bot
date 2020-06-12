@@ -76,6 +76,7 @@ impl SeriesTable {
         db: &sqlx::postgres::PgPool,
         time: chrono::NaiveDateTime,
         data: Measurement<'_>,
+        extra_labels: &[(String, String)],
     ) -> Result<()> {
         // Check the table has been created with `exists()` which is faster
         // than calling `create_if_not_exists` if the table already exists.
@@ -84,20 +85,35 @@ impl SeriesTable {
         }
 
         // Collect columns from labels
+        let mut argn = 4u32;
         let mut columns = String::from("time,value,labels");
         let mut placeholders = String::from("$1,$2,$3");
         let mut label_values = Vec::new();
         let mut json_labels = serde_json::Map::new();
-        for (i, (label, value)) in data.labels.into_iter().enumerate() {
+        for (label, value) in data.labels {
             if self.labels.iter().any(|l| l == label) {
                 columns.push_str(",\"");
                 columns.push_str(label);
                 columns.push('"');
                 placeholders.push_str("$1");
-                placeholders.push_str(&(i + 3).to_string());
+                placeholders.push_str(&argn.to_string());
                 label_values.push(value);
+                argn += 1;
             } else {
                 json_labels.insert(label.into(), value.into());
+            }
+        }
+        for (label, value) in extra_labels {
+            if self.labels.iter().any(|l| l == label) {
+                columns.push_str(",\"");
+                columns.push_str(label);
+                columns.push('"');
+                placeholders.push_str("$1");
+                placeholders.push_str(&argn.to_string());
+                label_values.push(value.into());
+                argn += 1;
+            } else {
+                json_labels.insert(label.into(), value.clone().into());
             }
         }
 

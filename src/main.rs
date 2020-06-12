@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::schema::*;
+use crate::scrape::{ScrapeList, ScrapeTarget};
 
 /// How frequently to update our pod list.
 /// Use the `WATCH_INTERVAL` env var to override.
@@ -49,20 +50,40 @@ fn main() -> Result<()> {
 /// The main thread's event loop
 async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
     let watch_interval_secs = match dotenv::var("WATCH_INTERVAL").ok() {
-        None => DEFAULT_WATCH_INTERVAL,
         Some(val) => {
             let secs = val.parse().context("invalid WATCH_INTERVAL")?;
             Duration::from_secs(secs)
         }
+        None => DEFAULT_WATCH_INTERVAL,
     };
     let scrape_interval_secs = match dotenv::var("SCRAPE_INTERVAL").ok() {
-        None => DEFAULT_SCRAPE_INTERVAL,
         Some(val) => {
             let secs = val.parse().context("invalid SCRAPE_INTERVAL")?;
             Duration::from_secs(secs)
         }
+        None => DEFAULT_SCRAPE_INTERVAL,
     };
-    let max_concurrency: usize = match dotenv::var("SCRAPE_CONCURRENCY").ok() {
+    let scrape_static_labels = match dotenv::var("SCRAPE_STATIC_LABELS").ok() {
+        Some(val) if !val.is_empty() => val
+            .split(',')
+            .map(|name_value| {
+                let name_value = name_value.splitn(2, '=').collect::<Vec<_>>();
+                match name_value.as_slice() {
+                    [name, value]
+                        if !value.is_empty()
+                            && !name.is_empty()
+                            && *name == name.to_snake_case() =>
+                    {
+                        Ok((name.to_string(), value.to_string()))
+                    }
+                    _ => Err(anyhow::anyhow!("invalid SCRAPE_STATIC_LABELS")),
+                }
+            })
+            .collect::<Result<_, _>>()?,
+        _ => Vec::new(),
+    };
+    let scrape_static_labels: &'static _ = Box::leak(scrape_static_labels.into_boxed_slice());
+    let scrape_concurrency: usize = match dotenv::var("SCRAPE_CONCURRENCY").ok() {
         Some(val) => val.parse().context("invalid SCRAPE_CONCURRENCY")?,
         None => 128,
     };
@@ -95,7 +116,7 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
     println!("Loaded {} metrics.", tables.len());
 
     // Collect the list of pods to be scraped for metrics
-    let pods = scrape::ScrapeList::shared();
+    let pods = ScrapeList::shared();
     pods.update().await?;
 
     // Every WATCH_INTERVAL, update our list of pods
@@ -124,8 +145,10 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
             // Scrape the targets with a given `max_concurrency`
             targets
                 .into_par_stream()
-                .limit(max_concurrency)
-                .map(move |target| scrape_once(db, tables, Arc::clone(&target)))
+                .limit(scrape_concurrency)
+                .map(move |target| {
+                    scrape_once(db, tables, scrape_static_labels, Arc::clone(&target))
+                })
                 .collect::<Vec<()>>()
                 .await;
 
@@ -147,10 +170,21 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
 async fn scrape_once(
     db: &'static sqlx::postgres::PgPool,
     tables: &'static RwLock<HashMap<String, &'static SeriesTable>>,
-    target: Arc<scrape::ScrapeTarget>,
+    static_labels: &'static [(String, String)],
+    target: Arc<ScrapeTarget>,
 ) {
     let scrape_time = Utc::now().naive_utc();
     if let Ok(input) = target.scrape().await {
+        let mut extra_labels = Vec::with_capacity(static_labels.len() + target.labels.len());
+        for label in static_labels {
+            extra_labels.push(label.clone());
+        }
+        for (label, value) in &target.labels {
+            if let Some(value) = value {
+                extra_labels.push((label.to_string(), value.clone()));
+            }
+        }
+
         let (metrics, values) = parser::parse(&input);
         for value in values {
             let time = value
@@ -163,17 +197,16 @@ async fn scrape_once(
             let mut table: Option<&'static SeriesTable> = (*tables.read()).get(key).copied();
             if table.is_none() {
                 if let Some(type_) = metrics.get(value.name) {
-                    tables
-                        .write()
-                        .entry(key.to_string())
-                        .or_insert_with(|| Box::leak(Box::new(define_series(*type_, &value))));
+                    tables.write().entry(key.to_string()).or_insert_with(|| {
+                        Box::leak(Box::new(define_series(*type_, &value, &extra_labels)))
+                    });
                     table = (*tables.read()).get(key).copied();
                 }
             }
 
             // Insert the data point
             if let Some(table) = table {
-                if let Err(_) = table.insert(&db, time, value).await {
+                if let Err(_) = table.insert(&db, time, value, &extra_labels).await {
                     // TODO: Record that an error occurred
                 }
             }
@@ -181,8 +214,12 @@ async fn scrape_once(
     }
 }
 
-fn define_series(type_: SeriesType, data: &parser::Measurement) -> SeriesTable {
-    let name = data.name.to_owned();
+fn define_series(
+    type_: SeriesType,
+    sample: &parser::Measurement,
+    static_labels: &[(String, String)],
+) -> SeriesTable {
+    let name = sample.name.to_owned();
 
     // Postgres table names have a max length of 63 characters.
     //
@@ -196,7 +233,10 @@ fn define_series(type_: SeriesType, data: &parser::Measurement) -> SeriesTable {
 
     // Collect the list of expected labels from a sample measurement
     let mut labels = Vec::new();
-    for (label, _) in &data.labels {
+    for (label, _) in static_labels {
+        labels.push(label.clone());
+    }
+    for (label, _) in &sample.labels {
         if *label != "time"
             && *label != "value"
             && !label.starts_with("__")
