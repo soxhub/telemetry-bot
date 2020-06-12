@@ -12,7 +12,6 @@ use heck::SnakeCase;
 use parallel_stream::prelude::*;
 use parking_lot::RwLock; // guaranteed to be eventually fair
 use sqlx::prelude::*;
-use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -67,13 +66,12 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
     // Load known metrics from the database
     println!("Loading metrics metadata...");
     let metrics: Vec<(String, String, String, String, Vec<String>)> =
-        sqlx::query_as("SELECT full_name, table_name, schema_name, series_type, label_columns FROM telemetry_bot.prometheus_metrics")
+        sqlx::query_as("SELECT name, table_name, schema_name, series_type, label_columns FROM telemetry_bot.metrics_tables")
             .fetch_all(&db)
             .await?;
-    let mut tables: HashMap<ScrapeKey<'static>, &'static SeriesTable> =
-        HashMap::with_capacity(metrics.len());
+    let mut tables: HashMap<String, &'static SeriesTable> = HashMap::with_capacity(metrics.len());
     for (metric, table, schema, type_, labels) in metrics {
-        let key = ScrapeKey::new(&schema, &metric);
+        let key = metric.clone();
         let type_ = type_.parse().expect("invalid metric type");
         let table = SeriesTable::new(metric, table, schema, type_, labels, true);
         tables.insert(key, Box::leak(Box::new(table)));
@@ -130,39 +128,9 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
     Ok(())
 }
 
-#[derive(Eq, PartialEq, Hash)]
-struct ScrapeKey<'a> {
-    schema: Cow<'a, str>,
-    metric: Cow<'a, str>,
-}
-
-impl ScrapeKey<'static> {
-    fn new(schema: &str, metric: &str) -> Self {
-        ScrapeKey {
-            schema: schema.to_string().into(),
-            metric: metric.to_string().into(),
-        }
-    }
-}
-
-impl ScrapeKey<'_> {
-    fn to_key(&self) -> ScrapeKey<'static> {
-        ScrapeKey::new(&self.schema, &self.metric)
-    }
-}
-
-impl<'a> From<(&'a str, &'a str)> for ScrapeKey<'a> {
-    fn from(value: (&'a str, &'a str)) -> Self {
-        ScrapeKey {
-            schema: value.0.into(),
-            metric: value.1.into(),
-        }
-    }
-}
-
 async fn scrape_once(
     db: &'static sqlx::postgres::PgPool,
-    tables: &'static RwLock<HashMap<ScrapeKey<'static>, &'static SeriesTable>>,
+    tables: &'static RwLock<HashMap<String, &'static SeriesTable>>,
     target: Arc<scrape::ScrapeTarget>,
 ) {
     let scrape_time = Utc::now().naive_utc();
@@ -173,22 +141,16 @@ async fn scrape_once(
                 .timestamp
                 .map(|t| NaiveDateTime::from_timestamp(t, 0))
                 .unwrap_or(scrape_time);
-            let key = ScrapeKey::from((target.schema.as_ref(), value.name));
+            let key = value.name;
 
             // Load the table for this metric
-            let mut table: Option<&'static SeriesTable> = {
-                let map = tables.read();
-                HashMap::get(&*map, &key).copied()
-            };
+            let mut table: Option<&'static SeriesTable> = (*tables.read()).get(key).copied();
             if table.is_none() {
                 if let Some(type_) = metrics.get(value.name) {
-                    tables.write().entry(key.to_key()).or_insert_with(|| {
+                    tables.write().entry(key.to_string()).or_insert_with(|| {
                         Box::leak(Box::new(define_series(*type_, &target, &value)))
                     });
-                    table = {
-                        let map = tables.read();
-                        HashMap::get(&*map, &key).copied()
-                    };
+                    table = (*tables.read()).get(key).copied();
                 }
             }
 
@@ -202,17 +164,13 @@ async fn scrape_once(
     }
 }
 
-fn define_series(
-    type_: SeriesType,
-    info: &scrape::ScrapeTarget,
-    data: &parser::Measurement,
-) -> SeriesTable {
+fn define_series(type_: SeriesType, data: &parser::Measurement,) -> SeriesTable {
     let name = data.name.to_owned();
 
     // Postgres table names have a max length of 63 characters.
     //
     // We truncate to 48 characters so that we can have useful index names for the table.
-    let schema = info.schema.clone();
+    let schema = "metrics".into();
     let table = {
         let mut snake_name = name.to_snake_case();
         snake_name.truncate(48);

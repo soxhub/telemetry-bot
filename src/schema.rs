@@ -146,7 +146,7 @@ impl SeriesTable {
         // Record the table in the database
         sqlx::query(
             r#"
-                INSERT INTO telemetry_bot.prometheus_metrics (full_name, table_name, schema_name, series_type, label_columns)
+                INSERT INTO telemetry_bot.metrics_tables (name, table_name, series_type, label_columns)
                 VALUES ($1, $2, $3, $4, $5)
             "#
         )

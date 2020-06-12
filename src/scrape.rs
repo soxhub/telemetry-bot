@@ -1,6 +1,5 @@
 use anyhow::Result;
 use arc_swap::ArcSwap;
-use heck::SnakeCase;
 use k8s_openapi::api::core::v1 as k8s;
 use std::convert::TryFrom;
 use std::sync::Arc;
@@ -13,9 +12,6 @@ pub struct ScrapeTarget {
 
     /// A static set of labels to append to scraped metrics
     pub labels: Vec<(&'static str, Option<String>)>,
-
-    /// The schema that metrics from this scrape target should be saved to, if specified
-    pub schema: String,
 }
 
 impl ScrapeTarget {
@@ -65,9 +61,10 @@ async fn find_scrape_targets() -> Result<Vec<Arc<ScrapeTarget>>> {
     let (request, _) = k8s::Pod::list_pod_for_all_namespaces(options)?;
     let response: k8s_openapi::List<k8s::Pod> = execute(request).await?;
 
-    // Collect pods with the appropriate annotation
+    // Collect pods scrape configuration
     let mut targets = Vec::new();
     for pod in response.items {
+        // Check if scraping is enabled for this pod
         let metadata = match pod.metadata {
             Some(meta) => meta,
             None => continue,
@@ -76,6 +73,8 @@ async fn find_scrape_targets() -> Result<Vec<Arc<ScrapeTarget>>> {
         if !annotations.contains_key("telemetry.bot/scrape") {
             continue;
         }
+
+        // Determine the endpoint to scrape
         let host = match pod.status.and_then(|s| s.pod_ip) {
             Some(ip) => ip,
             None => continue,
@@ -89,36 +88,26 @@ async fn find_scrape_targets() -> Result<Vec<Arc<ScrapeTarget>>> {
             .map(|path| path.trim_start_matches('/'))
             .unwrap_or("metrics");
         let url = format!("http://{}:{}/{}", host, port, path);
-        let schema = annotations
-            .get("telemetry.bot/schema")
-            .map(|schema| schema.to_snake_case())
-            .unwrap_or_else(|| "prometheus_metrics".into());
+
+        // Collect other labels to scrape
         let collect = annotations
-            .get("telemetry.bot/labels")
+            .get("telemetry.bot/metadata")
             .map(String::as_str)
-            .unwrap_or("namespace,job")
+            .unwrap_or("pod,namespace")
             .split(",")
             .filter(|x| !x.is_empty())
             .collect::<Vec<_>>();
         let mut labels = Vec::with_capacity(collect.len());
         for label in collect {
             match label {
+                "pod" => labels.push(("pod", metadata.name.clone())),
                 "namespace" => labels.push(("namespace", metadata.namespace.clone())),
-                "job" => {
-                    let job = annotations
-                        .get("telemetry.bot/job")
-                        .or(metadata.name.as_ref())
-                        .cloned();
-                    labels.push(("job", job));
-                }
                 _ => (),
             }
         }
-        targets.push(Arc::new(ScrapeTarget {
-            url,
-            labels,
-            schema,
-        }));
+
+        // Accept the pod
+        targets.push(Arc::new(ScrapeTarget { url, labels }));
     }
     Ok(targets)
 }
