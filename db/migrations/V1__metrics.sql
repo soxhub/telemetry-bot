@@ -9,7 +9,7 @@ CREATE TABLE telemetry_bot.metrics_tables (
     schema_name text NOT NULL,
     series_type text NOT NULL CHECK (series_type IN ('Counter', 'CounterInteger', 'Gauge', 'GaugeInteger')),
     label_columns text[] NOT NULL,
-    UNIQUE(name)
+    UNIQUE(name),
     UNIQUE(table_name)
 );
 

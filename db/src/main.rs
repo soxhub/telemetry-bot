@@ -23,9 +23,13 @@ fn main() -> Result<()> {
     if let Some(port) = url.port() {
         db = db.set_db_port(&port.to_string());
     }
-    let db_name = url.path().trim_start_matches('/');
+    let mut db_name = url.path().trim_start_matches('/').to_string();
+    if let Some(query) = url.query() {
+        db_name.push('?');
+        db_name.push_str(query);
+    }
     if !db_name.is_empty() {
-        db = db.set_db_name(db_name);
+        db = db.set_db_name(&db_name);
     }
 
     // Run migrations
