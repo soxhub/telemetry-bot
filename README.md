@@ -23,15 +23,7 @@ How do I do `X` in this rust project?
     createdb telemetry --owner=postgres -U postgres
     ```
 
-3. Configure local prometheus:
-
-   __Option A:__ _(TODO: Implement this)_ Run prometheus locally with docker-compose
-
-   __Option B:__ Port forward to prometheus on a kubernetes cluster:
-
-   ```sh
-   kubectl port-forward -n monitoring service/prometheus-operator-prometheus 9090:9090
-   ```
+3. Run `kube proxy` to pretend you are running in the kube environmnet
 
 ### Workflow
 Common rust commands:
