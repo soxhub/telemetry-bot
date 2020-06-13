@@ -10,6 +10,7 @@ RUN cargo build --release -p migrate
 # ===== EXEC =====
 FROM debian:stretch as EXEC
 
+RUN apt-get update
 RUN apt-get install -y libssl-dev
 
 COPY --from=BASE /src/telemetry-bot/target/release/telemetry-bot /bin/
