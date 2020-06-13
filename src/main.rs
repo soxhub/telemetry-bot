@@ -104,7 +104,7 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
     // Load known metrics from the database
     println!("Loading metrics metadata...");
     let metrics: Vec<(String, String, String, String, Vec<String>)> =
-        sqlx::query_as("SELECT name, table_name, schema_name, series_type, label_columns FROM telemetry_bot.metrics_tables")
+        sqlx::query_as("SELECT name, table_name, schema_name, series_type, label_columns FROM telemetry_catalog.metrics_tables")
             .fetch_all(&db)
             .await?;
     let mut tables: HashMap<String, &'static SeriesTable> = HashMap::with_capacity(metrics.len());
@@ -225,7 +225,7 @@ fn define_series(
     // Postgres table names have a max length of 63 characters.
     //
     // We truncate to 48 characters so that we can have useful index names for the table.
-    let schema = "metrics".into();
+    let schema = "telemetry_metrics".into();
     let table = {
         let mut snake_name = name.to_snake_case();
         snake_name.truncate(48);
