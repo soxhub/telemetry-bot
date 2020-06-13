@@ -1,6 +1,12 @@
 # ===== BUILD =====
-FROM rust:latest as build
+FROM alpine:3 AS build
 
+# Install rust
+ENV RUSTFLAGS="-C target-feature=+crt-static"
+RUN apk update
+RUN apk add rust cargo openssl-dev
+
+# Build the application
 RUN mkdir -p /src/telemetry-bot
 COPY . /src/telemetry-bot
 WORKDIR /src/telemetry-bot
@@ -8,10 +14,10 @@ RUN cargo build --release
 RUN cargo build --release -p migrate
 
 # ===== DEPLOYMENT =====
-FROM debian:stretch as deployment
+FROM alpine:3 as deployment
 
-RUN apt-get update
-RUN apt-get install -y libssl-dev
+RUN apk update
+RUN apk add openssl-dev
 
 COPY --from=build /src/telemetry-bot/target/release/telemetry-bot /bin/
 COPY --from=build /src/telemetry-bot/target/release/migrate /bin/
