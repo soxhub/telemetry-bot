@@ -1,5 +1,6 @@
 //! Telemetry Bot
 
+mod debug;
 mod parser;
 mod schema;
 mod scrape;
@@ -17,8 +18,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::debug::DebugMetrics;
 use crate::schema::*;
 use crate::scrape::{ScrapeList, ScrapeTarget};
+
+/// How frequently to collect metric timeseries data
+/// Use the `DEBUG_INTERVAL` env var to override (on, off, NUM_SECONDS)
+const DEFAULT_DEBUG_INTERVAL: Duration = Duration::from_secs(300);
 
 /// How frequently to update our pod list.
 /// Use the `WATCH_INTERVAL` env var to override.
@@ -49,6 +55,22 @@ fn main() -> Result<()> {
 
 /// The main thread's event loop
 async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
+    // Load configuration from environment variables
+    let print_errors = match dotenv::var("ERROR_LOGGER").ok() {
+        Some(val) if val == "true" || val == "on" || val == "1" => true,
+        Some(val) if val == "false" || val == "off" || val == "0" || val == "" => false,
+        Some(val) => val.parse().context("invalid ERROR_LOGGER")?,
+        None => false,
+    };
+    let debug_interval_secs = match dotenv::var("DEBUG_INTERVAL").ok() {
+        None => Some(DEFAULT_DEBUG_INTERVAL),
+        Some(val) if val == "true" || val == "on" || val == "1" => Some(DEFAULT_DEBUG_INTERVAL),
+        Some(val) if val == "false" || val == "off" || val == "0" || val == "" => None,
+        Some(val) => {
+            let secs = val.parse().context("invalid DEBUG_INTERVAL")?;
+            Some(Duration::from_secs(secs))
+        }
+    };
     let watch_interval_secs = match dotenv::var("WATCH_INTERVAL").ok() {
         Some(val) => {
             let secs = val.parse().context("invalid WATCH_INTERVAL")?;
@@ -93,6 +115,7 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
     };
 
     // Open a sqlx connection pool
+    println!("Connected to database...");
     let db_url = dotenv::var("DATABASE_URL").context("missing DATABASE_URL")?;
     let db = sqlx::postgres::PgPool::builder()
         .max_size(db_pool_size)
@@ -117,11 +140,28 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
     println!("Loaded {} metrics.", tables.len());
 
     // Collect the list of pods to be scraped for metrics
+    println!("Loading scrape targets...");
     let kube_client = kube::Client::try_default()
         .await
         .context("reading kubernetes api config")?;
     let pods = ScrapeList::shared(kube_client);
     pods.refresh().await.context("listing prometheus pods")?;
+    println!("Loaded {} scrape targets...", pods.len());
+
+    // Allocate a static debug metrics counter
+    // TODO: Probably implement a "/metrics" endpoint with `prometheus` crate
+    let debug: &'static _ = Box::leak(Box::new(DebugMetrics::default()));
+
+    // Every debug interval, log debug informationc
+    let debug_interval = match debug_interval_secs {
+        Some(duration) => Some(async_std::task::spawn(async move {
+            let mut interval = async_std::stream::interval(duration);
+            while let Some(_) = interval.next().await {
+                debug.publish();
+            }
+        })),
+        None => None,
+    };
 
     // Every WATCH_INTERVAL, update our list of pods
     let watch_interval = {
@@ -129,8 +169,14 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
         async_std::task::spawn(async move {
             let mut interval = async_std::stream::interval(watch_interval_secs);
             while let Some(_) = interval.next().await {
-                if let Err(_) = pods.refresh().await {
-                    // TODO: Log or something
+                match pods.refresh().await {
+                    Ok(()) => debug.update_endpoints(pods.len()),
+                    Err(err) => {
+                        debug.polling_failed();
+                        if print_errors {
+                            eprintln!("Error: {}", err);
+                        }
+                    }
                 }
             }
         })
@@ -151,7 +197,15 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
                 .into_par_stream()
                 .limit(scrape_concurrency)
                 .map(move |target| {
-                    scrape_once(db, tables, scrape_static_labels, Arc::clone(&target))
+                    // TODO: Move static params into real statics
+                    scrape_once(
+                        db,
+                        tables,
+                        scrape_static_labels,
+                        Arc::clone(&target),
+                        print_errors,
+                        debug,
+                    )
                 })
                 .collect::<Vec<()>>()
                 .await;
@@ -167,6 +221,9 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
     shutdown.await?;
     watch_interval.cancel().await;
     scrape_interval.cancel().await;
+    if let Some(debug_interval) = debug_interval {
+        debug_interval.cancel().await;
+    }
 
     Ok(())
 }
@@ -176,43 +233,63 @@ async fn scrape_once(
     tables: &'static RwLock<HashMap<String, &'static SeriesTable>>,
     static_labels: &'static [(String, String)],
     target: Arc<ScrapeTarget>,
+    print_errors: bool,
+    debug: &'static DebugMetrics,
 ) {
     let scrape_time = Utc::now().naive_utc();
-    if let Ok(input) = target.scrape().await {
-        let mut extra_labels = Vec::with_capacity(static_labels.len() + target.labels.len());
-        for label in static_labels {
-            extra_labels.push(label.clone());
-        }
-        for (label, value) in &target.labels {
-            if let Some(value) = value {
-                extra_labels.push((label.to_string(), value.clone()));
+    match target.scrape().await {
+        Ok(input) => {
+            debug.scrape_succeeded();
+
+            // Define a vec with all of the static labels + per-endpoint labels
+            let mut extra_labels = Vec::with_capacity(static_labels.len() + target.labels.len());
+            for label in static_labels {
+                extra_labels.push(label.clone());
             }
-        }
-
-        let (metrics, values) = parser::parse(&input);
-        for value in values {
-            let time = value
-                .timestamp
-                .map(|t| NaiveDateTime::from_timestamp(t, 0))
-                .unwrap_or(scrape_time);
-            let key = value.name;
-
-            // Load the table for this metric
-            let mut table: Option<&'static SeriesTable> = (*tables.read()).get(key).copied();
-            if table.is_none() {
-                if let Some(type_) = metrics.get(value.name) {
-                    tables.write().entry(key.to_string()).or_insert_with(|| {
-                        Box::leak(Box::new(define_series(*type_, &value, &extra_labels)))
-                    });
-                    table = (*tables.read()).get(key).copied();
+            for (label, value) in &target.labels {
+                if let Some(value) = value {
+                    extra_labels.push((label.to_string(), value.clone()));
                 }
             }
 
-            // Insert the data point
-            if let Some(table) = table {
-                if let Err(_) = table.insert(&db, time, value, &extra_labels).await {
-                    // TODO: Record that an error occurred
+            // Insert each value into postgres, create new tables as necessary
+            let (metrics, values) = parser::parse(&input);
+            for value in values {
+                let time = value
+                    .timestamp
+                    .map(|t| NaiveDateTime::from_timestamp(t, 0))
+                    .unwrap_or(scrape_time);
+                let key = value.name;
+
+                // Load the table for this metric
+                let mut table: Option<&'static SeriesTable> = (*tables.read()).get(key).copied();
+                if table.is_none() {
+                    if let Some(type_) = metrics.get(value.name) {
+                        tables.write().entry(key.to_string()).or_insert_with(|| {
+                            Box::leak(Box::new(define_series(*type_, &value, &extra_labels)))
+                        });
+                        table = (*tables.read()).get(key).copied();
+                    }
                 }
+
+                // Insert the data point
+                if let Some(table) = table {
+                    match table.insert(&db, time, value, &extra_labels).await {
+                        Ok(_) => debug.insert_succeeded(),
+                        Err(err) => {
+                            debug.insert_failed();
+                            if print_errors {
+                                eprintln!("Error: {}", err);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Err(err) => {
+            debug.scrape_failed();
+            if print_errors {
+                eprintln!("Error: {}", err);
             }
         }
     }

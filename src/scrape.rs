@@ -38,6 +38,10 @@ impl ScrapeList {
         Arc::new(Self { api, list })
     }
 
+    pub fn len(&self) -> usize {
+        self.list.load().len()
+    }
+
     pub fn get(&self) -> Vec<Arc<ScrapeTarget>> {
         Vec::clone(&self.list.load())
     }
