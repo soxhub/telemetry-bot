@@ -117,8 +117,11 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
     println!("Loaded {} metrics.", tables.len());
 
     // Collect the list of pods to be scraped for metrics
-    let pods = ScrapeList::shared();
-    pods.update().await?;
+    let kube_client = kube::Client::try_default()
+        .await
+        .context("reading kubernetes api config")?;
+    let pods = ScrapeList::shared(kube_client);
+    pods.refresh().await.context("listing prometheus pods")?;
 
     // Every WATCH_INTERVAL, update our list of pods
     let watch_interval = {
@@ -126,7 +129,7 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
         async_std::task::spawn(async move {
             let mut interval = async_std::stream::interval(watch_interval_secs);
             while let Some(_) = interval.next().await {
-                if let Err(_) = pods.update().await {
+                if let Err(_) = pods.refresh().await {
                     // TODO: Log or something
                 }
             }

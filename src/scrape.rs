@@ -1,7 +1,6 @@
 use anyhow::Result;
 use arc_swap::ArcSwap;
 use k8s_openapi::api::core::v1 as k8s;
-use std::convert::TryFrom;
 use std::sync::Arc;
 
 pub struct ScrapeTarget {
@@ -28,14 +27,15 @@ impl ScrapeTarget {
 }
 
 pub struct ScrapeList {
+    api: kube::Api<k8s::Pod>,
     list: ArcSwap<Vec<Arc<ScrapeTarget>>>,
 }
 
 impl ScrapeList {
-    pub fn shared() -> Arc<Self> {
-        Arc::new(Self {
-            list: ArcSwap::new(Arc::new(Vec::new())),
-        })
+    pub fn shared(client: kube::Client) -> Arc<Self> {
+        let api = kube::Api::all(client);
+        let list = ArcSwap::new(Arc::new(Vec::new()));
+        Arc::new(Self { api, list })
     }
 
     pub fn get(&self) -> Vec<Arc<ScrapeTarget>> {
@@ -46,24 +46,24 @@ impl ScrapeList {
         self.list.store(Arc::new(list));
     }
 
-    pub async fn update(&self) -> Result<()> {
-        let targets = find_scrape_targets().await?;
+    pub async fn refresh(&self) -> Result<()> {
+        // TODO: Replace polling implementation with `watch`-ing implementation
+        let targets = find_scrape_targets(&self.api).await?;
         self.put(targets);
         Ok(())
     }
 }
 
-async fn find_scrape_targets() -> Result<Vec<Arc<ScrapeTarget>>> {
+async fn find_scrape_targets(api: &kube::Api<k8s::Pod>) -> Result<Vec<Arc<ScrapeTarget>>> {
     // Get list of pods from prometheus
-    let mut options = k8s_openapi::ListOptional::default();
-    options.label_selector = Some("telemetry=true");
-    options.timeout_seconds = Some(3 * 60);
-    let (request, _) = k8s::Pod::list_pod_for_all_namespaces(options)?;
-    let response: k8s_openapi::List<k8s::Pod> = execute(request).await?;
+    let options = kube::api::ListParams::default()
+        .timeout(30)
+        .labels("telemetry=true");
+    let pods = api.list(&options).await?;
 
     // Collect pods scrape configuration
     let mut targets = Vec::new();
-    for pod in response.items {
+    for pod in pods {
         // Check if scraping is enabled for this pod
         let metadata = match pod.metadata {
             Some(meta) => meta,
@@ -110,20 +110,4 @@ async fn find_scrape_targets() -> Result<Vec<Arc<ScrapeTarget>>> {
         targets.push(Arc::new(ScrapeTarget { url, labels }));
     }
     Ok(targets)
-}
-
-async fn execute<T>(request: http::Request<Vec<u8>>) -> Result<T>
-where
-    T: serde::de::DeserializeOwned,
-{
-    let (parts, body) = request.into_parts();
-    let body = http_types::Body::from_bytes(body);
-    let request = http::Request::from_parts(parts, body);
-    let request = http_types::Request::try_from(request)?;
-    let request = surf::Request::try_from(request)?;
-    let response = request
-        .recv_json()
-        .await
-        .map_err(|err| anyhow::anyhow!("failed to list pods: {}", err))?;
-    Ok(response)
 }
