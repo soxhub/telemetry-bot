@@ -97,7 +97,8 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
     let db = sqlx::postgres::PgPool::builder()
         .max_size(db_pool_size)
         .build(&db_url)
-        .await?;
+        .await
+        .context("connecting to timescaledb")?;
     println!("Connected to {}", db_url);
 
     // Load known metrics from the database
