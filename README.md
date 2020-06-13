@@ -47,12 +47,11 @@ To reset the database:
 ```sh
 dropdb telemetry -U postgres
 createdb telemetry --owner=postgres -U postgres
-cargo run -p telemetry-migrate
+cargo run -p migrate
 ```
 
 ### Libraries for X:
 Links to online documentation for important libraries (almost always on `docs.rs/<CRATE>`). 
 
  - std lib: [std](https://doc.rust-lang.org/std/)
- - http client: [surf](https://docs.rs/surf)
  - database client: [sqlx](https://docs.rs/sqlx)
