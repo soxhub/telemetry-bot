@@ -46,7 +46,7 @@ impl DebugMetrics {
         let failed_inserts = self.failed_inserts.swap(0, Ordering::Relaxed);
         let failed_polling = self.failed_polling.swap(0, Ordering::Relaxed);
         println!(
-            "Debug: endpoints {} (errors {}) | scraped {} (errors {}) | inserted {} (errors {})",
+            "Debug: pods {} (errors {}) | scraped {} (errors {}) | inserted {} (errors {})",
             total_targets,
             failed_polling,
             total_scrapes,
