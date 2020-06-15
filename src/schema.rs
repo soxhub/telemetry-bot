@@ -95,7 +95,7 @@ impl SeriesTable {
                 columns.push_str(",\"");
                 columns.push_str(label);
                 columns.push('"');
-                placeholders.push_str("$1");
+                placeholders.push('$');
                 placeholders.push_str(&argn.to_string());
                 label_values.push(value);
                 argn += 1;
@@ -108,7 +108,7 @@ impl SeriesTable {
                 columns.push_str(",\"");
                 columns.push_str(label);
                 columns.push('"');
-                placeholders.push_str("$1");
+                placeholders.push_str("$");
                 placeholders.push_str(&argn.to_string());
                 label_values.push(value.into());
                 argn += 1;
