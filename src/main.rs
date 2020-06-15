@@ -203,7 +203,6 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
                 .into_par_stream()
                 .limit(scrape_concurrency)
                 .map(move |target| {
-                    // TODO: Move static params into real statics
                     scrape_once(db, debug, tables, scrape_static_labels, Arc::clone(&target))
                 })
                 .collect::<Vec<()>>()
@@ -234,7 +233,11 @@ async fn scrape_once(
     static_labels: &'static [(String, String)],
     target: Arc<ScrapeTarget>,
 ) {
-    let scrape_time = Utc::now().naive_utc();
+     // Get the current timestamp (w/o nanoseconds); we don't need that level of precision
+    let scrape_time = {
+        let raw = Utc::now().naive_utc();
+        raw.with_nanosecond(0).unwrap_or(raw)
+    };
     match target.scrape().await {
         Ok(input) => {
             debug.scrape_succeeded();

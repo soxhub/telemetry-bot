@@ -15,7 +15,6 @@ pub struct ScrapeTarget {
 
 impl ScrapeTarget {
     pub async fn scrape(&self) -> Result<String> {
-        eprintln!("scrape: {}", self.url);
         async_std::future::timeout(crate::SCRAPE_TIMEOUT, async {
             surf::get(&self.url)
                 .recv_string()
