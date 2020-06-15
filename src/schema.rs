@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_std::sync::Mutex;
 use std::str::FromStr;
 use std::sync::atomic;
@@ -81,7 +81,9 @@ impl SeriesTable {
         // Check the table has been created with `exists()` which is faster
         // than calling `create_if_not_exists` if the table already exists.
         if !self.exists() {
-            self.create_if_not_exists(db).await?;
+            self.create_if_not_exists(db)
+                .await
+                .context("SeriesTable::create_if_not_exists")?;
         }
 
         // Collect columns from labels
@@ -166,7 +168,7 @@ impl SeriesTable {
                     (name, table_name, schema_name, series_type, label_columns)
                 VALUES
                     ($1, $2, $3, $4, $5)
-            "#
+            "#,
         )
         .bind(&self.name)
         .bind(&self.table)
@@ -190,7 +192,8 @@ impl SeriesTable {
             value_type = self.series.sql_type(),
         ))
         .execute(db)
-        .await?;
+        .await
+        .context("in CREATE TABLE")?;
 
         // Add columns to the table
         for label in &self.labels {
@@ -205,7 +208,8 @@ impl SeriesTable {
                 column_name = label,
             ))
             .execute(db)
-            .await?;
+            .await
+            .context("in ALTER TABLE")?;
         }
 
         // Create a hypertable for the series
@@ -215,7 +219,8 @@ impl SeriesTable {
             table_name = self.table,
         ))
         .execute(db)
-        .await?;
+        .await
+        .context("in SELECT create_hypertable")?;
 
         // Create indices for the table
         sqlx::query(&format!(
@@ -228,7 +233,8 @@ impl SeriesTable {
             table_name = self.table,
         ))
         .execute(db)
-        .await?;
+        .await
+        .context("in CREATE INDEX")?;
 
         self.exists.store(true, atomic::Ordering::SeqCst);
 
