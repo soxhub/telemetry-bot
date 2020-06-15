@@ -15,14 +15,15 @@ pub struct ScrapeTarget {
 
 impl ScrapeTarget {
     pub async fn scrape(&self) -> Result<String> {
+        eprintln!("scrape: {}", self.url);
         async_std::future::timeout(crate::SCRAPE_TIMEOUT, async {
             surf::get(&self.url)
                 .recv_string()
                 .await
-                .map_err(|err| anyhow::format_err!("failed to scrape metrics: {}", err))
+                .map_err(|err| anyhow::format_err!("failed to scrape: {}", err))
         })
         .await
-        .map_err(|err| anyhow::format_err!("failed to scrape metrics: {}", err))?
+        .map_err(|err| anyhow::format_err!("failed to scrape: {}", err))?
     }
 }
 

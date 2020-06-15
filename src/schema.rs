@@ -14,7 +14,16 @@ pub enum SeriesType {
 }
 
 impl SeriesType {
-    fn sql_type(&self) -> &'static str {
+    fn as_str(&self) -> &str {
+        match self {
+            SeriesType::Counter => "Counter",
+            SeriesType::CounterInteger => "CounterInteger",
+            SeriesType::Gauge => "Gauge",
+            SeriesType::GaugeInteger => "GaugeInteger",
+        }
+    }
+
+    fn as_sql_type(&self) -> &'static str {
         match self {
             SeriesType::Counter | SeriesType::Gauge => "float",
             SeriesType::CounterInteger | SeriesType::GaugeInteger => "bigint",
@@ -97,7 +106,7 @@ impl SeriesTable {
                 columns.push_str(",\"");
                 columns.push_str(label);
                 columns.push('"');
-                placeholders.push('$');
+                placeholders.push_str(",$");
                 placeholders.push_str(&argn.to_string());
                 label_values.push(value);
                 argn += 1;
@@ -110,7 +119,7 @@ impl SeriesTable {
                 columns.push_str(",\"");
                 columns.push_str(label);
                 columns.push('"');
-                placeholders.push_str("$");
+                placeholders.push_str(",$");
                 placeholders.push_str(&argn.to_string());
                 label_values.push(value.into());
                 argn += 1;
@@ -173,7 +182,7 @@ impl SeriesTable {
         .bind(&self.name)
         .bind(&self.table)
         .bind(&self.schema)
-        .bind(self.series.sql_type())
+        .bind(self.series.as_str())
         .bind(&self.labels)
         .execute(db)
         .await?;
@@ -189,7 +198,7 @@ impl SeriesTable {
             "#,
             schema_name = self.schema,
             table_name = self.table,
-            value_type = self.series.sql_type(),
+            value_type = self.series.as_sql_type(),
         ))
         .execute(db)
         .await

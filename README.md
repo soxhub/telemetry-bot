@@ -20,7 +20,7 @@ How do I do `X` in this rust project?
 2. Create a development database w/ TimescaleDB
 
     ```sh
-    # Install Timescale DB
+    # Install Timescale DB (macOS)
     brew tap timescale/tap
     brew install timescaledb
     /usr/local/bin/timescaledb_move.sh
