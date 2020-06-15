@@ -162,8 +162,10 @@ impl SeriesTable {
         // Record the table in the database
         sqlx::query(
             r#"
-                INSERT INTO telemetry_catalog.metrics_tables (name, table_name, series_type, label_columns)
-                VALUES ($1, $2, $3, $4, $5)
+                INSERT INTO telemetry_catalog.metrics_tables
+                    (name, table_name, schema_name, series_type, label_columns)
+                VALUES
+                    ($1, $2, $3, $4, $5)
             "#
         )
         .bind(&self.name)
