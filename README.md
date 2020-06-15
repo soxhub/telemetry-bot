@@ -17,13 +17,26 @@ How do I do `X` in this rust project?
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
    ```
 
-2. Create a development database
+2. Create a development database w/ TimescaleDB
 
     ```sh
+    # Install Timescale DB
+    brew tap timescale/tap
+    brew install timescaledb
+    /usr/local/bin/timescaledb_move.sh
+    timescaledb-tune
+    brew services restart postgresql
+
+    # Create database
+    createuser postgres -s || echo "skipped"
     createdb telemetry --owner=postgres -U postgres
     ```
 
-3. Run `kube proxy` to pretend you are running in the kube environmnet
+3. Ensure you are configured to connect to kubernetes
+
+    ```sh
+    test -f ~/.kube/config && echo "Ok" || echo "Missing config"
+    ```
 
 ### Workflow
 Common rust commands:

@@ -15,14 +15,21 @@ use parking_lot::RwLock; // guaranteed to be eventually fair
 use sqlx::prelude::*;
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
 
 use crate::debug::DebugMetrics;
 use crate::schema::*;
 use crate::scrape::{ScrapeList, ScrapeTarget};
 
-/// How frequently to collect metric timeseries data
+/// Whether to log (verbose) error output.
+/// Use the `ERROR_LOGGER` env var to override (on, off)
+static ERROR_LOGGER: AtomicBool = AtomicBool::new(false);
+
+/// How frequently to collect metric timeseries data.
 /// Use the `DEBUG_INTERVAL` env var to override (on, off, NUM_SECONDS)
 const DEFAULT_DEBUG_INTERVAL: Duration = Duration::from_secs(300);
 
@@ -30,11 +37,11 @@ const DEFAULT_DEBUG_INTERVAL: Duration = Duration::from_secs(300);
 /// Use the `WATCH_INTERVAL` env var to override.
 const DEFAULT_WATCH_INTERVAL: Duration = Duration::from_secs(30);
 
-/// How frequently to collect metric timeseries data
+/// How frequently to collect metric timeseries data.
 /// Use the `SCRAPE_INTERVAL` env var to override.
 const DEFAULT_SCRAPE_INTERVAL: Duration = Duration::from_secs(15);
 
-/// How long to wait before skipping a scrape endpoint
+/// How long to wait before skipping a scrape endpoint.
 const SCRAPE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// The program's main entry point.
@@ -56,12 +63,13 @@ fn main() -> Result<()> {
 /// The main thread's event loop
 async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
     // Load configuration from environment variables
-    let print_errors = match dotenv::var("ERROR_LOGGER").ok() {
+    let error_logger_enabled = match dotenv::var("ERROR_LOGGER").ok() {
         Some(val) if val == "true" || val == "on" || val == "1" => true,
         Some(val) if val == "false" || val == "off" || val == "0" || val == "" => false,
-        Some(val) => val.parse().context("invalid ERROR_LOGGER")?,
+        Some(val) => val.parse::<bool>().context("invalid ERROR_LOGGER")?,
         None => false,
     };
+    ERROR_LOGGER.store(error_logger_enabled, Ordering::Relaxed);
     let debug_interval_secs = match dotenv::var("DEBUG_INTERVAL").ok() {
         None => Some(DEFAULT_DEBUG_INTERVAL),
         Some(val) if val == "true" || val == "on" || val == "1" => Some(DEFAULT_DEBUG_INTERVAL),
@@ -98,7 +106,7 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
                     {
                         Ok((name.to_string(), value.to_string()))
                     }
-                    _ => Err(anyhow::anyhow!("invalid SCRAPE_STATIC_LABELS")),
+                    _ => Err(anyhow::format_err!("invalid SCRAPE_STATIC_LABELS")),
                 }
             })
             .collect::<Result<_, _>>()?,
@@ -173,9 +181,7 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
                     Ok(()) => debug.update_endpoints(pods.len()),
                     Err(err) => {
                         debug.polling_failed();
-                        if print_errors {
-                            eprintln!("Error: {}", err);
-                        }
+                        debug_error(err);
                     }
                 }
             }
@@ -198,14 +204,7 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
                 .limit(scrape_concurrency)
                 .map(move |target| {
                     // TODO: Move static params into real statics
-                    scrape_once(
-                        db,
-                        tables,
-                        scrape_static_labels,
-                        Arc::clone(&target),
-                        print_errors,
-                        debug,
-                    )
+                    scrape_once(db, debug, tables, scrape_static_labels, Arc::clone(&target))
                 })
                 .collect::<Vec<()>>()
                 .await;
@@ -230,11 +229,10 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
 
 async fn scrape_once(
     db: &'static sqlx::postgres::PgPool,
+    debug: &'static DebugMetrics,
     tables: &'static RwLock<HashMap<String, &'static SeriesTable>>,
     static_labels: &'static [(String, String)],
     target: Arc<ScrapeTarget>,
-    print_errors: bool,
-    debug: &'static DebugMetrics,
 ) {
     let scrape_time = Utc::now().naive_utc();
     match target.scrape().await {
@@ -278,9 +276,7 @@ async fn scrape_once(
                         Ok(_) => debug.insert_succeeded(),
                         Err(err) => {
                             debug.insert_failed();
-                            if print_errors {
-                                eprintln!("Error: {}", err);
-                            }
+                            debug_error(err);
                         }
                     }
                 }
@@ -288,9 +284,7 @@ async fn scrape_once(
         }
         Err(err) => {
             debug.scrape_failed();
-            if print_errors {
-                eprintln!("Error: {}", err);
-            }
+            debug_error(err);
         }
     }
 }
@@ -329,4 +323,11 @@ fn define_series(
         }
     }
     SeriesTable::new(name, table, schema, type_, labels, false)
+}
+
+fn debug_error(err: anyhow::Error) {
+    eprintln!("Error: {}", err);
+    for err in err.chain().skip(1) {
+        eprintln!("Caused by: {}", err);
+    }
 }

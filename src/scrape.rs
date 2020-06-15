@@ -19,10 +19,10 @@ impl ScrapeTarget {
             surf::get(&self.url)
                 .recv_string()
                 .await
-                .map_err(|err| anyhow::anyhow!("failed to scrape metrics: {}", err))
+                .map_err(|err| anyhow::format_err!("failed to scrape metrics: {}", err))
         })
         .await
-        .map_err(|err| anyhow::anyhow!("failed to scrape metrics: {}", err))?
+        .map_err(|err| anyhow::format_err!("failed to scrape metrics: {}", err))?
     }
 }
 
