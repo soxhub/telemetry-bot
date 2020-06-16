@@ -233,7 +233,7 @@ async fn scrape_once(
     static_labels: &'static [(String, String)],
     target: Arc<ScrapeTarget>,
 ) {
-     // Get the current timestamp (w/o nanoseconds); we don't need that level of precision
+    // Get the current timestamp (w/o nanoseconds); we don't need that level of precision
     let scrape_time = {
         let raw = Utc::now().naive_utc();
         raw.with_nanosecond(0).unwrap_or(raw)

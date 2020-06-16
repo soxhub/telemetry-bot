@@ -2201,6 +2201,7 @@ dependencies = [
  "dotenv",
  "futures 0.3.5",
  "heck",
+ "indexmap",
  "k8s-openapi",
  "kube",
  "parallel-stream",
