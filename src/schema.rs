@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use async_std::sync::Mutex;
+use sqlx::prelude::*;
 use std::str::FromStr;
 use std::sync::atomic;
 
@@ -45,29 +46,26 @@ impl FromStr for SeriesType {
     }
 }
 
-pub struct SeriesTable {
+pub struct SeriesSchema {
     pub name: String,
     pub table: String,
-    pub schema: String,
     pub series: SeriesType,
     pub labels: Vec<String>,
     exists: atomic::AtomicBool,
     create: Mutex<()>,
 }
 
-impl SeriesTable {
+impl SeriesSchema {
     pub fn new(
         name: String,
         table: String,
-        schema: String,
         series: SeriesType,
         labels: Vec<String>,
         exists: bool,
     ) -> Self {
-        SeriesTable {
+        SeriesSchema {
             name,
             table,
-            schema,
             series,
             labels,
             exists: atomic::AtomicBool::new(exists),
@@ -92,22 +90,22 @@ impl SeriesTable {
         if !self.exists() {
             self.create_if_not_exists(db)
                 .await
-                .context("SeriesTable::create_if_not_exists")?;
+                .context("SeriesSchema::create_if_not_exists")?;
         }
 
         // Collect columns from labels
-        let mut argn = 4u32;
-        let mut columns = String::from("time,value,labels");
-        let mut placeholders = String::from("$1,$2,$3");
+        let mut argn = 1u32;
+        let mut label_columns = String::new();
+        let mut label_placeholders = String::new();
         let mut label_values = Vec::new();
         let mut json_labels = serde_json::Map::new();
         for (label, value) in data.labels {
             if self.labels.iter().any(|l| l == label) {
-                columns.push_str(",\"");
-                columns.push_str(label);
-                columns.push('"');
-                placeholders.push_str(",$");
-                placeholders.push_str(&argn.to_string());
+                label_columns.push_str(",\"");
+                label_columns.push_str(label);
+                label_columns.push('"');
+                label_placeholders.push_str(",$");
+                label_placeholders.push_str(&argn.to_string());
                 label_values.push(value);
                 argn += 1;
             } else {
@@ -116,38 +114,36 @@ impl SeriesTable {
         }
         for (label, value) in extra_labels {
             if self.labels.iter().any(|l| l == label) {
-                columns.push_str(",\"");
-                columns.push_str(label);
-                columns.push('"');
-                placeholders.push_str(",$");
-                placeholders.push_str(&argn.to_string());
+                label_columns.push_str(",\"");
+                label_columns.push_str(label);
+                label_columns.push('"');
+                label_placeholders.push_str(",$");
+                label_placeholders.push_str(&argn.to_string());
                 label_values.push(value.into());
                 argn += 1;
             } else {
                 json_labels.insert(label.into(), value.clone().into());
             }
         }
-
-        // Build query
-        let stmt = format!(
-            "INSERT INTO {schema_name}.{table_name} ({columns}) VALUES ({placeholders})",
-            schema_name = self.schema,
-            table_name = self.table,
-            columns = columns,
-            placeholders = placeholders,
-        );
-        let mut query = sqlx::query(&stmt);
-
-        // Set timestamp
-        query = query.bind(time);
-
-        // Set value
-        match data.value {
-            Number::F64(n) => query = query.bind(n),
-            Number::I64(n) => query = query.bind(n),
+        if !json_labels.is_empty() {
+            label_columns.push_str(",\"json\"");
+            label_placeholders.push_str(",$");
+            label_placeholders.push_str(&argn.to_string());
         }
 
-        // Set labels
+        // Insert labels into series
+        let stmt = format!(
+            r#"
+                INSERT INTO telemetry_series.{table_name} ({columns})
+                VALUES ({placeholders})
+                ON CONFLICT {table_name}_unique_idx DO UPDATE SET id = excluded.id
+                RETURNING id
+            "#,
+            table_name = self.table,
+            columns = label_columns,
+            placeholders = label_placeholders,
+        );
+        let mut query = sqlx::query_as::<_, (i64,)>(&stmt);
         query = query.bind(if json_labels.len() > 0 {
             Some(serde_json::Value::Object(json_labels))
         } else {
@@ -156,9 +152,25 @@ impl SeriesTable {
         for value in &label_values {
             query = query.bind(value.as_ref());
         }
+        let (series_id,) = query
+            .fetch_one(db)
+            .await
+            .context("failed to insert measurment labels")?;
 
-        // Insert data
-        query.execute(db).await?;
+        // Failed to insert
+        let stmt = format!(
+            "INSERT INTO telemetry_data.{table_name} (time,series_id,value) VALUES ($1,$2,$3)",
+            table_name = self.table,
+        );
+        let mut query = sqlx::query(&stmt).bind(time).bind(series_id);
+        match data.value {
+            Number::F64(n) => query = query.bind(n),
+            Number::I64(n) => query = query.bind(n),
+        }
+        query
+            .execute(db)
+            .await
+            .context("failed to insert measurment data")?;
 
         Ok(())
     }
@@ -173,78 +185,111 @@ impl SeriesTable {
         // Record the table in the database
         sqlx::query(
             r#"
-                INSERT INTO telemetry_catalog.metrics_tables
-                    (name, table_name, schema_name, series_type, label_columns)
+                INSERT INTO telemetry_catalog.tables
+                    (name, table_name, series_type, label_columns)
                 VALUES
-                    ($1, $2, $3, $4, $5)
+                    ($1, $2, $3, $4)
             "#,
         )
         .bind(&self.name)
         .bind(&self.table)
-        .bind(&self.schema)
         .bind(self.series.as_str())
         .bind(&self.labels)
         .execute(db)
         .await?;
 
-        // Create a table for the series
+        // Create a table for the data
         sqlx::query(&format!(
             r#"
-                CREATE TABLE IF NOT EXISTS {schema_name}.{table_name} (
-                    time timestamp,
-                    value {value_type},
-                    labels jsonb
+                CREATE TABLE telemetry_data.{table_name} (
+                    time timestamp NOT NULL,
+                    value {value_type} NOT NULL,
+                    series_id text NOT NULL,
                 );
             "#,
-            schema_name = self.schema,
             table_name = self.table,
             value_type = self.series.as_sql_type(),
         ))
         .execute(db)
         .await
-        .context("in CREATE TABLE")?;
+        .context("failed to create telemetry_data table")?;
 
-        // Add columns to the table
-        for label in &self.labels {
-            sqlx::query(&format!(
-                r#"
-                    ALTER TABLE {schema_name}.{table_name}
-                        ADD COLUMN IF NOT EXISTS {column_name} text
-                    ;
-                "#,
-                schema_name = self.schema,
-                table_name = self.table,
-                column_name = label,
-            ))
-            .execute(db)
-            .await
-            .context("in ALTER TABLE")?;
-        }
-
-        // Create a hypertable for the series
+        // Create a hypertable for the data table
         sqlx::query(&format!(
-            "SELECT create_hypertable('{schema_name}.{table_name}', 'time');",
-            schema_name = self.schema,
+            "SELECT create_hypertable('telemetry_data.{table_name}', 'time');",
             table_name = self.table,
         ))
         .execute(db)
         .await
-        .context("in SELECT create_hypertable")?;
+        .context("failed to create hypertable")?;
 
-        // Create indices for the table
+        // Configure compression for the hyper table
+        sqlx::query(&format!(
+            "ALTER TABLE telemetry_data.{table_name} SET (timescaledb.compress, timescaledb.compress_segmentby = 'series_id');",
+            table_name = self.table,
+        ))
+        .execute(db)
+        .await
+        .context("failed to set hypertable compression segmentby")?;
+        sqlx::query(&format!(
+            "SELECT add_compress_chunks_policy('telemetry_metrics.{table_name}', INTERVAL '7 days');",
+            table_name = self.table,
+        ))
+        .execute(db)
+        .await
+        .context("failed to set hypertable compression policy")?;
+
+        // Create a table for the labels
+        let label_column_definitions = std::iter::once("json jsonb".to_string())
+            .chain(self.labels.iter().map(|col| format!("{} text", col)))
+            .collect::<Vec<_>>()
+            .join(",");
         sqlx::query(&format!(
             r#"
-                CREATE INDEX IF NOT EXISTS {table_name}_gin_idx
-                ON {schema_name}.{table_name} USING GIN (labels)
+                CREATE TABLE telemetry_series.{table_name} (
+                    id bigserial PRIMARY KEY,
+                    {column_definitions}
+                );
+            "#,
+            table_name = self.table,
+            column_definitions = label_column_definitions,
+        ))
+        .execute(db)
+        .await
+        .context("failed to create telemetry_series table")?;
+
+        // Create unique index for the labels table
+        let label_column_names = std::iter::once("json")
+            .chain(self.labels.iter().map(|col| col.as_str()))
+            .collect::<Vec<_>>()
+            .join(",");
+        sqlx::query(&format!(
+            r#"
+                CREATE UNIQUE INDEX {table_name}_unique_idx
+                ON telemetry_series.{table_name} ({column_names})
                 WHERE labels IS NOT NULL;
             "#,
-            schema_name = self.schema,
+            table_name = self.table,
+            column_names = label_column_names,
+        ))
+        .execute(db)
+        .await
+        .context("failed to create unique index on labels table")?;
+
+        // Create jsonb index for the labels table
+        sqlx::query(&format!(
+            r#"
+                CREATE INDEX {table_name}_gin_idx
+                ON telemetry_series.{table_name} USING GIN (json)
+                WHERE labels IS NOT NULL;
+            "#,
             table_name = self.table,
         ))
         .execute(db)
         .await
-        .context("in CREATE INDEX")?;
+        .context("failed to create gin index on labels table")?;
 
+        // Update created at state
         self.exists.store(true, atomic::Ordering::SeqCst);
 
         Ok(())

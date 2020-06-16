@@ -145,15 +145,16 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
 
     // Load known metrics from the database
     println!("Loading metrics metadata...");
-    let metrics: Vec<(String, String, String, String, Vec<String>)> =
-        sqlx::query_as("SELECT name, table_name, schema_name, series_type, label_columns FROM telemetry_catalog.metrics_tables")
-            .fetch_all(&db)
-            .await?;
-    let mut tables: HashMap<String, &'static SeriesTable> = HashMap::with_capacity(metrics.len());
-    for (metric, table, schema, type_, labels) in metrics {
+    let metrics: Vec<(String, String, String, Vec<String>)> = sqlx::query_as(
+        "SELECT name, table_name, series_type, label_columns FROM telemetry_catalog.tables",
+    )
+    .fetch_all(&db)
+    .await?;
+    let mut tables: HashMap<String, &'static SeriesSchema> = HashMap::with_capacity(metrics.len());
+    for (metric, table, type_, labels) in metrics {
         let key = metric.clone();
         let type_ = type_.parse().expect("invalid metric type");
-        let table = SeriesTable::new(metric, table, schema, type_, labels, true);
+        let table = SeriesSchema::new(metric, table, type_, labels, true);
         tables.insert(key, Box::leak(Box::new(table)));
     }
     println!("Loaded {} metrics.", tables.len());
@@ -235,7 +236,7 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
 
 async fn scrape_once(
     db: &'static sqlx::postgres::PgPool,
-    tables: &'static RwLock<HashMap<String, &'static SeriesTable>>,
+    tables: &'static RwLock<HashMap<String, &'static SeriesSchema>>,
     static_labels: &'static [(String, String)],
     target: Arc<ScrapeTarget>,
 ) {
@@ -269,7 +270,7 @@ async fn scrape_once(
                 let key = value.name;
 
                 // Load the table for this metric
-                let mut table: Option<&'static SeriesTable> = (*tables.read()).get(key).copied();
+                let mut table: Option<&'static SeriesSchema> = (*tables.read()).get(key).copied();
                 if table.is_none() {
                     if let Some(type_) = metrics.get(value.name) {
                         tables.write().entry(key.to_string()).or_insert_with(|| {
@@ -302,13 +303,12 @@ fn define_series(
     type_: SeriesType,
     sample: &parser::Measurement,
     static_labels: &[(String, String)],
-) -> SeriesTable {
+) -> SeriesSchema {
     let name = sample.name.to_owned();
 
     // Postgres table names have a max length of 63 characters.
     //
     // We truncate to 48 characters so that we can have useful index names for the table.
-    let schema = "telemetry_metrics".into();
     let table = {
         let mut snake_name = name.to_snake_case();
         snake_name.truncate(48);
@@ -323,6 +323,7 @@ fn define_series(
     for (label, _) in &sample.labels {
         if *label != "time"
             && *label != "value"
+            && *label != "json"
             && !label.starts_with("__")
             && label
                 .chars()
@@ -331,5 +332,5 @@ fn define_series(
             labels.push(label.to_string());
         }
     }
-    SeriesTable::new(name, table, schema, type_, labels, false)
+    SeriesSchema::new(name, table, type_, labels, false)
 }
