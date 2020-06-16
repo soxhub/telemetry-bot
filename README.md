@@ -47,6 +47,7 @@ How do I do `X` in this rust project?
 Common rust commands:
 
  - `cargo run` – run `telemetry-bot` with debug symbols
+ - `cargo check` – check if the project typechecks (faster than `cargo build` when iterating on code)
  - `cargo build` – compile executables with debug symbols (for use with a debugger); outputs to `target/debug/telemetry-bot`
  - `cargo build --all-targets --release` – compile optimized executables for production; outputs to `target/release/telemetry-bot`
  - `cargo doc --open` – build and open API docs for this project and all of its dependencies
