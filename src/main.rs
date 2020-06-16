@@ -27,10 +27,18 @@ use crate::scrape::{ScrapeList, ScrapeTarget};
 
 /// Whether to log (verbose) error output.
 /// Use the `ERROR_LOGGER` env var to override (on, off)
-static ERROR_LOGGER: AtomicBool = AtomicBool::new(false);
+pub static ERROR_LOGGER: AtomicBool = AtomicBool::new(false);
 
-/// Counters for debug metrics
-static DEBUG: DebugMetrics = DebugMetrics::new();
+pub static DEBUG: DebugMetrics = DebugMetrics::new();
+
+pub fn debug_error(err: anyhow::Error) {
+    if ERROR_LOGGER.load(Ordering::Relaxed) {
+        eprintln!("Error: {}", err);
+        for err in err.chain().skip(1) {
+            eprintln!("Caused by: {}", err);
+        }
+    }
+}
 
 /// How frequently to collect metric timeseries data.
 /// Use the `DEBUG_INTERVAL` env var to override (on, off, NUM_SECONDS)
@@ -324,11 +332,4 @@ fn define_series(
         }
     }
     SeriesTable::new(name, table, schema, type_, labels, false)
-}
-
-fn debug_error(err: anyhow::Error) {
-    eprintln!("Error: {}", err);
-    for err in err.chain().skip(1) {
-        eprintln!("Caused by: {}", err);
-    }
 }
