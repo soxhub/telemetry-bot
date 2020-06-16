@@ -29,6 +29,9 @@ use crate::scrape::{ScrapeList, ScrapeTarget};
 /// Use the `ERROR_LOGGER` env var to override (on, off)
 static ERROR_LOGGER: AtomicBool = AtomicBool::new(false);
 
+/// Counters for debug metrics
+static DEBUG: DebugMetrics = DebugMetrics::new();
+
 /// How frequently to collect metric timeseries data.
 /// Use the `DEBUG_INTERVAL` env var to override (on, off, NUM_SECONDS)
 const DEFAULT_DEBUG_INTERVAL: Duration = Duration::from_secs(300);
@@ -156,16 +159,12 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
     pods.refresh().await.context("listing prometheus pods")?;
     println!("Loaded {} scrape targets...", pods.len());
 
-    // Allocate a static debug metrics counter
-    // TODO: Probably implement a "/metrics" endpoint with `prometheus` crate
-    let debug: &'static _ = Box::leak(Box::new(DebugMetrics::default()));
-
     // Every debug interval, log debug informationc
     let debug_interval = match debug_interval_secs {
         Some(duration) => Some(async_std::task::spawn(async move {
             let mut interval = async_std::stream::interval(duration);
             while let Some(_) = interval.next().await {
-                debug.publish();
+                DEBUG.publish();
             }
         })),
         None => None,
@@ -178,9 +177,9 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
             let mut interval = async_std::stream::interval(watch_interval_secs);
             while let Some(_) = interval.next().await {
                 match pods.refresh().await {
-                    Ok(()) => debug.update_endpoints(pods.len()),
+                    Ok(()) => DEBUG.update_pods(pods.len()),
                     Err(err) => {
-                        debug.polling_failed();
+                        DEBUG.polling_failed();
                         debug_error(err);
                     }
                 }
@@ -203,7 +202,7 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
                 .into_par_stream()
                 .limit(scrape_concurrency)
                 .map(move |target| {
-                    scrape_once(db, debug, tables, scrape_static_labels, Arc::clone(&target))
+                    scrape_once(db, tables, scrape_static_labels, Arc::clone(&target))
                 })
                 .collect::<Vec<()>>()
                 .await;
@@ -228,7 +227,6 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
 
 async fn scrape_once(
     db: &'static sqlx::postgres::PgPool,
-    debug: &'static DebugMetrics,
     tables: &'static RwLock<HashMap<String, &'static SeriesTable>>,
     static_labels: &'static [(String, String)],
     target: Arc<ScrapeTarget>,
@@ -240,7 +238,7 @@ async fn scrape_once(
     };
     match target.scrape().await {
         Ok(input) => {
-            debug.scrape_succeeded();
+            DEBUG.scrape_succeeded();
 
             // Define a vec with all of the static labels + per-endpoint labels
             let mut extra_labels = Vec::with_capacity(static_labels.len() + target.labels.len());
@@ -276,9 +274,9 @@ async fn scrape_once(
                 // Insert the data point
                 if let Some(table) = table {
                     match table.insert(&db, time, value, &extra_labels).await {
-                        Ok(_) => debug.insert_succeeded(),
+                        Ok(_) => DEBUG.write_succeeded(),
                         Err(err) => {
-                            debug.insert_failed();
+                            DEBUG.write_failed();
                             debug_error(err);
                         }
                     }
@@ -286,7 +284,7 @@ async fn scrape_once(
             }
         }
         Err(err) => {
-            debug.scrape_failed();
+            DEBUG.scrape_failed();
             debug_error(err);
         }
     }
