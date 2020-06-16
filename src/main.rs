@@ -62,8 +62,13 @@ fn main() -> Result<()> {
     // When we receive a SIGINT (or SIGTERM) signal, begin exiting.
     let signal_once = Cell::new(Some(send_shutdown));
     ctrlc::set_handler(move || {
+        // The first time we receive the signal, shutdown gracefully
         if let Some(sender) = signal_once.take() {
             sender.send(()).expect("failed to shutdown");
+        }
+        // The second time we receive the signal, shutdown immediately
+        else {
+            std::process::exit(1);
         }
     })?;
 
@@ -323,6 +328,7 @@ fn define_series(
     for (label, _) in &sample.labels {
         if *label != "time"
             && *label != "value"
+            && *label != "series_id"
             && *label != "json"
             && !label.starts_with("__")
             && label
