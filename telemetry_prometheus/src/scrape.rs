@@ -50,7 +50,7 @@ impl ScrapeTarget {
         let collect = annotations
             .get("telemetry.bot/metadata")
             .map(String::as_str)
-            .unwrap_or("pod,namespace")
+            .unwrap_or("pod,instance,namespace")
             .split(",")
             .filter(|x| !x.is_empty())
             .collect::<Vec<_>>();
@@ -58,6 +58,7 @@ impl ScrapeTarget {
         for label in collect {
             match label {
                 "pod" => labels.push(("pod", Some(name.clone()))),
+                "instance" => labels.push(("instance", Some(host.clone()))),
                 "namespace" => labels.push(("namespace", metadata.namespace.clone())),
                 _ => (),
             }

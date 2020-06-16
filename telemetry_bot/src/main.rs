@@ -1,15 +1,14 @@
 //! Telemetry Bot
 
+mod storage;
+
 use anyhow::{Context, Result}; // alias std::result::Result with dynamic error type
 use chrono::prelude::*;
 use futures::channel::oneshot;
 use futures::stream::StreamExt;
 use heck::SnakeCase;
 use parallel_stream::prelude::*;
-use parking_lot::RwLock; // guaranteed to be eventually fair
-use sqlx::prelude::*;
 use std::cell::Cell;
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -18,8 +17,8 @@ use telemetry_prometheus::debug::DEBUG;
 use telemetry_prometheus::error::debug_error;
 use telemetry_prometheus::parser;
 use telemetry_prometheus::scrape::{ScrapeList, ScrapeTarget};
-use telemetry_prometheus::SeriesType;
-use telemetry_schema::*;
+
+use crate::storage::Storage;
 
 /// Whether to log (verbose) error output.
 /// Use the `ERROR_LOGGER` env var to override (on, off)
@@ -118,36 +117,9 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
         Some(val) => val.parse().context("invalid SCRAPE_CONCURRENCY")?,
         None => 128,
     };
-    let db_pool_size = match dotenv::var("DATABASE_POOL_SIZE").ok() {
-        Some(val) => val.parse().context("invalid DATABASE_POOL_SIZE")?,
-        None => 8,
-    };
 
-    // Open a sqlx connection pool
-    println!("Connected to database...");
-    let db_url = dotenv::var("DATABASE_URL").context("missing DATABASE_URL")?;
-    let db = sqlx::postgres::PgPool::builder()
-        .max_size(db_pool_size)
-        .build(&db_url)
-        .await
-        .context("connecting to timescaledb")?;
-    println!("Connected to {}", db_url);
-
-    // Load known metrics from the database
-    println!("Loading metrics metadata...");
-    let metrics: Vec<(String, String, String, Vec<String>)> = sqlx::query_as(
-        "SELECT name, table_name, series_type, label_columns FROM telemetry_catalog.tables",
-    )
-    .fetch_all(&db)
-    .await?;
-    let mut tables: HashMap<String, &'static SeriesSchema> = HashMap::with_capacity(metrics.len());
-    for (metric, table, type_, labels) in metrics {
-        let key = metric.clone();
-        let type_ = type_.parse().expect("invalid metric type");
-        let table = SeriesSchema::new(metric, table, type_, labels, true);
-        tables.insert(key, Box::leak(Box::new(table)));
-    }
-    println!("Loaded {} metrics.", tables.len());
+    // Connect to storage provider
+    let store: &'static _ = Box::leak(storage::from_env().await?);
 
     // Collect the list of pods to be scraped for metrics
     println!("Loading scrape targets...");
@@ -187,8 +159,6 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
     };
 
     // Every SCRAPE_INTERVAL (at most), scrape each endpoint and write it to the database
-    let db: &'static _ = Box::leak(Box::new(db));
-    let tables: &'static _ = Box::leak(Box::new(RwLock::new(tables)));
     let scrape_interval = async_std::task::spawn(async move {
         loop {
             let start = Instant::now();
@@ -200,9 +170,7 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
             targets
                 .into_par_stream()
                 .limit(scrape_concurrency)
-                .map(move |target| {
-                    scrape_once(db, tables, scrape_static_labels, Arc::clone(&target))
-                })
+                .map(move |target| scrape_target(store, scrape_static_labels, Arc::clone(&target)))
                 .collect::<Vec<()>>()
                 .await;
 
@@ -224,61 +192,47 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
     Ok(())
 }
 
-async fn scrape_once(
-    db: &'static sqlx::postgres::PgPool,
-    tables: &'static RwLock<HashMap<String, &'static SeriesSchema>>,
-    static_labels: &'static [(String, String)],
+async fn scrape_target(
+    store: &'static dyn Storage,
+    global_labels: &'static [(String, String)],
     target: Arc<ScrapeTarget>,
 ) {
     // Get the current timestamp (w/o nanoseconds); we don't need that level of precision
-    let scrape_time = {
+    let timestamp = {
         let raw = Utc::now().naive_utc();
-        raw.with_nanosecond(0).unwrap_or(raw)
+        raw.with_nanosecond(0).unwrap_or(raw).timestamp()
     };
     match target.scrape(SCRAPE_TIMEOUT).await {
         Ok(input) => {
             DEBUG.scrape_succeeded();
 
             // Define a vec with all of the static labels + per-endpoint labels
-            let mut extra_labels = Vec::with_capacity(static_labels.len() + target.labels.len());
-            for label in static_labels {
-                extra_labels.push(label.clone());
+            let mut static_labels = Vec::with_capacity(global_labels.len() + target.labels.len());
+            for label in global_labels {
+                static_labels.push(label.clone());
             }
             for (label, value) in &target.labels {
                 if let Some(value) = value {
-                    extra_labels.push((label.to_string(), value.clone()));
+                    static_labels.push((label.to_string(), value.clone()));
                 }
             }
 
-            // Insert each value into postgres, create new tables as necessary
-            let (metrics, values) = parser::parse(&input);
-            for value in values {
-                let time = value
-                    .timestamp
-                    .map(|t| NaiveDateTime::from_timestamp(t, 0))
-                    .unwrap_or(scrape_time);
-                let key = value.name;
+            // Write the samples to the backing storage
+            let (metrics, samples) = parser::parse(&input);
+            if samples.is_empty() {
+                return;
+            }
 
-                // Load the table for this metric
-                let mut table: Option<&'static SeriesSchema> = (*tables.read()).get(key).copied();
-                if table.is_none() {
-                    if let Some(type_) = metrics.get(value.name) {
-                        tables.write().entry(key.to_string()).or_insert_with(|| {
-                            Box::leak(Box::new(define_series(*type_, &value, &extra_labels)))
-                        });
-                        table = (*tables.read()).get(key).copied();
-                    }
-                }
-
-                // Insert the data point
-                if let Some(table) = table {
-                    match table.insert(&db, time, value, &extra_labels).await {
-                        Ok(_) => DEBUG.write_succeeded(),
-                        Err(err) => {
-                            DEBUG.write_failed();
-                            debug_error(err);
-                        }
-                    }
+            let (sent, errors) = store
+                .write(timestamp, metrics, samples, &static_labels)
+                .await;
+            if sent > 0 {
+                DEBUG.writes_succeeded(sent);
+            }
+            if !errors.is_empty() {
+                DEBUG.writes_failed(errors.len());
+                for err in errors {
+                    debug_error(err);
                 }
             }
         }
@@ -287,41 +241,4 @@ async fn scrape_once(
             debug_error(err);
         }
     }
-}
-
-fn define_series(
-    type_: SeriesType,
-    sample: &parser::Sample,
-    static_labels: &[(String, String)],
-) -> SeriesSchema {
-    let name = sample.name.to_owned();
-
-    // Postgres table names have a max length of 63 characters.
-    //
-    // We truncate to 48 characters so that we can have useful index names for the table.
-    let table = {
-        let mut snake_name = name.to_snake_case();
-        snake_name.truncate(48);
-        snake_name.trim_end_matches('_').to_owned()
-    };
-
-    // Collect the list of expected labels from a sample measurement
-    let mut labels = Vec::new();
-    for (label, _) in static_labels {
-        labels.push(label.clone());
-    }
-    for (label, _) in &sample.labels {
-        if *label != "time"
-            && *label != "value"
-            && *label != "series_id"
-            && *label != "json"
-            && !label.starts_with("__")
-            && label
-                .chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' || ch == '-')
-        {
-            labels.push(label.to_string());
-        }
-    }
-    SeriesSchema::new(name, table, type_, labels, false)
 }

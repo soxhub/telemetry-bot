@@ -6,15 +6,14 @@ edition = "2018"
 default-run = "telemetry-bot"
 
 [features]
-default = ["storage-telemetry-catalog"]
-
-# # TODO: Implement "remote write" (protobuf-based) storage backend
-# storage-remote-write = ["remote-write"]
-
-storage-telemetry-catalog = ["telemetry-schema"]
-
+default = [
+    "storage-remote-write",
+    "storage-timescale-standalone",
+]
+storage-remote-write = ["telemetry-remote-write"]
 # # TODO: Implement writing metrics directly to the prometheus schema
-# storage-prometheus-catalog = []
+# storage-timescale-prometheus = []
+storage-timescale-standalone = ["telemetry-schema"]
 
 [dependencies]
 anyhow = "1.0.31"
@@ -31,7 +30,9 @@ sqlx = { version = "0.3.5", features = ["postgres", "tls"] }
 
 # Local dependencies
 telemetry-prometheus = { path = "../telemetry_prometheus" }
+telemetry-remote-write = { path = "../telemetry_remote_write", optional = true }
 telemetry-schema = { path = "../telemetry_schema", optional = true }
 
 # Enable compatibiltiy with `tokio`-based dependencies (the `kube` crate)
 smol = { version = "0.1.11", features = ["tokio02"] }
+async-trait = "0.1.35"

@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "telemetry_bot",
-    "telemetry_schema",
     "telemetry_prometheus",
+    "telemetry_remote_write",
+    "telemetry_schema",
 ]

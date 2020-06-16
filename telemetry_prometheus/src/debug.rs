@@ -40,8 +40,17 @@ impl DebugMetrics {
         self.scrape_errors.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn writes_succeeded(&self, n: usize) {
+        self.write_count.fetch_add(n, Ordering::Relaxed);
+    }
+
     pub fn write_succeeded(&self) {
         self.write_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn writes_failed(&self, n: usize) {
+        self.write_count.fetch_add(n, Ordering::Relaxed);
+        self.write_errors.fetch_add(n, Ordering::Relaxed);
     }
 
     pub fn write_failed(&self) {

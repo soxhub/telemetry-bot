@@ -11,6 +11,15 @@ pub enum SampleValue {
     I64(i64),
 }
 
+impl SampleValue {
+    pub fn to_f64(&self) -> f64 {
+        match *self {
+            SampleValue::F64(val) => val,
+            SampleValue::I64(val) => val as f64,
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum SeriesType {
     Counter,

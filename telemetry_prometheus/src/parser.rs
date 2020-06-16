@@ -12,8 +12,10 @@ pub struct Sample<'a> {
     pub timestamp: Option<i64>,
 }
 
+pub type MetricTypes<'a> = HashMap<Cow<'a, str>, SeriesType>;
+
 /// A parser for Prometheus's text exposition format.
-pub fn parse(input: &str) -> (HashMap<Cow<str>, SeriesType>, Vec<Sample>) {
+pub fn parse(input: &str) -> (MetricTypes, Vec<Sample>) {
     let mut values = Vec::new();
     let mut metrics = HashMap::new();
     let mut continue_help = false;
@@ -73,10 +75,7 @@ pub fn parse(input: &str) -> (HashMap<Cow<str>, SeriesType>, Vec<Sample>) {
     (metrics, values)
 }
 
-fn parse_value<'i>(
-    metric_types: &HashMap<Cow<str>, SeriesType>,
-    line: &'i str,
-) -> Option<Sample<'i>> {
+fn parse_value<'i>(metric_types: &MetricTypes, line: &'i str) -> Option<Sample<'i>> {
     // Split `metric_name{labels} value timestamp` into parts
     let (metric_str, value_str, unix_str) = if line.contains('}') {
         let mut reverse_parts = line.rsplitn(2, '}'); // use rsplit, because lables could contain escaped '}'
