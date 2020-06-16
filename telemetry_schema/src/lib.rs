@@ -1,50 +1,10 @@
 use anyhow::{Context, Result};
 use async_std::sync::Mutex;
 use sqlx::prelude::*;
-use std::str::FromStr;
 use std::sync::atomic;
 
-use crate::parser::{Measurement, Number};
-
-#[derive(Copy, Clone)]
-pub enum SeriesType {
-    Counter,
-    CounterInteger,
-    Gauge,
-    GaugeInteger,
-}
-
-impl SeriesType {
-    fn as_str(&self) -> &str {
-        match self {
-            SeriesType::Counter => "Counter",
-            SeriesType::CounterInteger => "CounterInteger",
-            SeriesType::Gauge => "Gauge",
-            SeriesType::GaugeInteger => "GaugeInteger",
-        }
-    }
-
-    fn as_sql_type(&self) -> &'static str {
-        match self {
-            SeriesType::Counter | SeriesType::Gauge => "float",
-            SeriesType::CounterInteger | SeriesType::GaugeInteger => "bigint",
-        }
-    }
-}
-
-impl FromStr for SeriesType {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "Counter" => Ok(SeriesType::Counter),
-            "CounterInteger" => Ok(SeriesType::CounterInteger),
-            "Gauge" => Ok(SeriesType::Gauge),
-            "GaugeInteger" => Ok(SeriesType::GaugeInteger),
-            _ => Err(()),
-        }
-    }
-}
+use telemetry_prometheus::parser::Sample;
+use telemetry_prometheus::{SampleValue, SeriesType};
 
 pub struct SeriesSchema {
     pub name: String,
@@ -82,7 +42,7 @@ impl SeriesSchema {
         &self,
         db: &sqlx::postgres::PgPool,
         time: chrono::NaiveDateTime,
-        data: Measurement<'_>,
+        sample: Sample<'_>,
         extra_labels: &[(String, String)],
     ) -> Result<()> {
         // Check the table has been created with `exists()` which is faster
@@ -99,7 +59,7 @@ impl SeriesSchema {
         let mut label_placeholders = String::new();
         let mut label_values = Vec::new();
         let mut json_labels = serde_json::Map::new();
-        for (label, value) in data.labels {
+        for (label, value) in sample.labels {
             if self.labels.iter().any(|l| l == label) {
                 label_columns.push_str(",\"");
                 label_columns.push_str(label);
@@ -153,7 +113,7 @@ impl SeriesSchema {
         let (series_id,) = query
             .fetch_one(db)
             .await
-            .context("failed to insert measurment labels")?;
+            .context("failed to insert series labels")?;
 
         // Failed to insert
         let stmt = format!(
@@ -161,14 +121,14 @@ impl SeriesSchema {
             table_name = self.table,
         );
         let mut query = sqlx::query(&stmt).bind(time).bind(series_id);
-        match data.value {
-            Number::F64(n) => query = query.bind(n),
-            Number::I64(n) => query = query.bind(n),
+        match sample.value {
+            SampleValue::F64(n) => query = query.bind(n),
+            SampleValue::I64(n) => query = query.bind(n),
         }
         query
             .execute(db)
             .await
-            .context("failed to insert measurment data")?;
+            .context("failed to insert data sample")?;
 
         Ok(())
     }
@@ -190,7 +150,10 @@ impl SeriesSchema {
                 );
             "#,
             table_name = self.table,
-            value_type = self.series.as_sql_type(),
+            value_type = match self.series {
+                SeriesType::Counter | SeriesType::Gauge => "float",
+                SeriesType::CounterInteger | SeriesType::GaugeInteger => "bigint",
+            },
         ))
         .execute(db)
         .await
@@ -222,10 +185,15 @@ impl SeriesSchema {
         .context("failed to set hypertable compression policy")?;
 
         // Create a table for the labels
-        let label_column_definitions = std::iter::once("json jsonb DEFAULT 'null'::jsonb NOT NULL".to_string())
-            .chain(self.labels.iter().map(|col| format!("\"{}\" text DEFAULT '' NOT NULL", col)))
-            .collect::<Vec<_>>()
-            .join(",");
+        let label_column_definitions =
+            std::iter::once("json jsonb DEFAULT 'null'::jsonb NOT NULL".to_string())
+                .chain(
+                    self.labels
+                        .iter()
+                        .map(|col| format!("\"{}\" text DEFAULT '' NOT NULL", col)),
+                )
+                .collect::<Vec<_>>()
+                .join(",");
         sqlx::query(&format!(
             r#"
                 CREATE TABLE telemetry_series.{table_name} (

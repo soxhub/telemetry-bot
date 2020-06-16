@@ -1,5 +1,7 @@
 pub use std::sync::atomic::{AtomicUsize, Ordering};
 
+pub static DEBUG: DebugMetrics = DebugMetrics::new();
+
 pub struct DebugMetrics {
     pod_count: AtomicUsize,
     polling_errors: AtomicUsize,

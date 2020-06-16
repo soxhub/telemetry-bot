@@ -1,10 +1,5 @@
 //! Telemetry Bot
 
-mod debug;
-mod parser;
-mod schema;
-mod scrape;
-
 use anyhow::{Context, Result}; // alias std::result::Result with dynamic error type
 use chrono::prelude::*;
 use futures::channel::oneshot;
@@ -15,30 +10,20 @@ use parking_lot::RwLock; // guaranteed to be eventually fair
 use sqlx::prelude::*;
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::debug::DebugMetrics;
-use crate::schema::*;
-use crate::scrape::{ScrapeList, ScrapeTarget};
+use telemetry_prometheus::debug::DEBUG;
+use telemetry_prometheus::error::debug_error;
+use telemetry_prometheus::parser;
+use telemetry_prometheus::scrape::{ScrapeList, ScrapeTarget};
+use telemetry_prometheus::SeriesType;
+use telemetry_schema::*;
 
 /// Whether to log (verbose) error output.
 /// Use the `ERROR_LOGGER` env var to override (on, off)
-pub static ERROR_LOGGER: AtomicBool = AtomicBool::new(false);
-
-pub static DEBUG: DebugMetrics = DebugMetrics::new();
-
-pub fn debug_error(err: anyhow::Error) {
-    if ERROR_LOGGER.load(Ordering::Relaxed) {
-        eprintln!("Error: {}", err);
-        for err in err.chain().skip(1) {
-            eprintln!("Caused by: {}", err);
-        }
-    }
-}
+static ERROR_LOGGER: AtomicBool = AtomicBool::new(false);
 
 /// How frequently to collect metric timeseries data.
 /// Use the `DEBUG_INTERVAL` env var to override (on, off, NUM_SECONDS)
@@ -250,7 +235,7 @@ async fn scrape_once(
         let raw = Utc::now().naive_utc();
         raw.with_nanosecond(0).unwrap_or(raw)
     };
-    match target.scrape().await {
+    match target.scrape(SCRAPE_TIMEOUT).await {
         Ok(input) => {
             DEBUG.scrape_succeeded();
 
@@ -306,7 +291,7 @@ async fn scrape_once(
 
 fn define_series(
     type_: SeriesType,
-    sample: &parser::Measurement,
+    sample: &parser::Sample,
     static_labels: &[(String, String)],
 ) -> SeriesSchema {
     let name = sample.name.to_owned();

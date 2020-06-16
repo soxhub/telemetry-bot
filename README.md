@@ -4,8 +4,6 @@ and Jaeger api and exports timeseries to TimescaleDB.
 
 ![Fact Core](doc/bot.png)
 
-
-
 ## Development
 How do I do `X` in this rust project?
 
@@ -34,6 +32,9 @@ How do I do `X` in this rust project?
     createuser postgres -s || echo "skipped"
     createdb telemetry --owner=postgres -U postgres
     psql -U postgres -d telemetry -c 'CREATE EXTENSION timescaledb'
+
+    # Run migrations
+    cargo run -p telemetry-schema telemetry-migrate
     ```
 
 3. Ensure you are configured to connect to kubernetes
@@ -45,9 +46,9 @@ How do I do `X` in this rust project?
 ### Workflow
 Common rust commands:
 
- - `cargo run` – run (like a script) with debug symbols
- - `cargo build` – compile with debug symbols (for use with a debugger); outputs to `target/debug/telemetry-bot`
- - `cargo build --release` – compile optimized build for production; outputs to `target/release/telemetry-bot`
+ - `cargo run` – run `telemetry-bot` with debug symbols
+ - `cargo build` – compile executables with debug symbols (for use with a debugger); outputs to `target/debug/telemetry-bot`
+ - `cargo build --all-targets --release` – compile optimized executables for production; outputs to `target/release/telemetry-bot`
  - `cargo doc --open` – build and open API docs for this project and all of its dependencies
  - `cargo test` – run integration and unit tests
  
@@ -57,11 +58,5 @@ To reset the database:
 dropdb telemetry -U postgres \
     && createdb telemetry --owner=postgres -U postgres \
     && psql -U postgres -d telemetry -c 'CREATE EXTENSION timescaledb' \
-    && cargo run -p migrate
+    && cargo run -p telemetry-schema telemetry-migrate
 ```
-
-### Libraries for X:
-Links to online documentation for important libraries (almost always on `docs.rs/<CRATE>`). 
-
- - std lib: [std](https://doc.rust-lang.org/std/)
- - database client: [sqlx](https://docs.rs/sqlx)

@@ -6,7 +6,8 @@ use k8s_openapi::api::core::v1 as k8s;
 use parking_lot::Mutex; // faster Mutex for non-contentious access
 use std::sync::Arc;
 
-use crate::{debug_error, DEBUG};
+use crate::debug::DEBUG;
+use crate::error::debug_error;
 
 #[derive(Eq, PartialEq)]
 pub struct ScrapeTarget {
@@ -65,8 +66,8 @@ impl ScrapeTarget {
         Some(ScrapeTarget { name, url, labels })
     }
 
-    pub async fn scrape(&self) -> Result<String> {
-        async_std::future::timeout(crate::SCRAPE_TIMEOUT, async {
+    pub async fn scrape(&self, timeout: std::time::Duration) -> Result<String> {
+        async_std::future::timeout(timeout, async {
             surf::get(&self.url)
                 .recv_string()
                 .await
