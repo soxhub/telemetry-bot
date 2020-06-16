@@ -6,6 +6,8 @@ use k8s_openapi::api::core::v1 as k8s;
 use parking_lot::Mutex; // faster Mutex for non-contentious access
 use std::sync::Arc;
 
+use crate::{debug_error, DEBUG};
+
 #[derive(Eq, PartialEq)]
 pub struct ScrapeTarget {
     pub name: String,
@@ -149,13 +151,17 @@ impl ScrapeList {
             .labels("telemetry=true");
         let informer = kube::runtime::Informer::new(self.api.clone()).params(options);
 
-        // Get an event stream from the informer
+        // Poll events forever
         let mut events_stream = informer.poll().await?.boxed();
         loop {
             let event = match events_stream.try_next().await {
                 Ok(Some(event)) => event,
                 Ok(None) => continue,
-                Err(_) => continue,
+                Err(err) => {
+                    DEBUG.polling_failed();
+                    debug_error(err.into());
+                    continue;
+                }
             };
             match event {
                 // When a pod was added or modified, check if it should be present in the list
