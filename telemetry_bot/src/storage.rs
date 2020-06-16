@@ -60,8 +60,7 @@ pub struct RemoteWriteStorage {
 #[cfg(feature = "storage-remote-write")]
 impl RemoteWriteStorage {
     pub fn from_env() -> Result<RemoteWriteStorage> {
-        let base_url = dotenv::var("REMOTE_STORAGE_URL").context("missing REMOTE_STORAGE_URL")?;
-        let write_url = format!("{}/write", base_url.trim_end_matches('/'));
+        let write_url = dotenv::var("REMOTE_WRITE_URL").context("missing REMOTE_WRITE_URL")?;
         Ok(RemoteWriteStorage { write_url })
     }
 }
