@@ -42,7 +42,7 @@ async fn run_migrations() -> Result<()> {
         }
 
         println!(" - Migration: {}", filename.trim_end_matches(".sql"));
-        for stmt in raw_sql.split(";") {
+        for stmt in raw_sql.split(',') {
             sqlx::query(stmt)
                 .execute(&mut conn)
                 .await

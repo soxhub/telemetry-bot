@@ -49,12 +49,14 @@ How do I do `X` in this rust project?
 ### Workflow
 Common rust commands:
 
- - `cargo run` – run `telemetry-bot` with debug symbols
+ - `cargo run`   – run telemetry-bot with debug symbols
+ - `cargo fmt`   - auto format all rust code in the project
  - `cargo check` – check if the project typechecks (faster than `cargo build` when iterating on code)
  - `cargo build` – compile executables with debug symbols (for use with a debugger); outputs to `target/debug/telemetry-bot`
  - `cargo build --all-targets --release` – compile optimized executables for production; outputs to `target/release/telemetry-bot`
  - `cargo doc --open` – build and open API docs for this project and all of its dependencies
  - `cargo test` – run integration and unit tests
+ - `cargo +nightly clippy` – get extra linter warnings (e.g. for style, performance, etc)
  
 To reset the database:
 

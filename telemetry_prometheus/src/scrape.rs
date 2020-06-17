@@ -51,7 +51,7 @@ impl ScrapeTarget {
             .get("telemetry.bot/metadata")
             .map(String::as_str)
             .unwrap_or("pod,instance,namespace")
-            .split(",")
+            .split(',')
             .filter(|x| !x.is_empty())
             .collect::<Vec<_>>();
         let mut labels = Vec::with_capacity(collect.len());

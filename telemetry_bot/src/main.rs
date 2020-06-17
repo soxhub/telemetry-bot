@@ -232,9 +232,16 @@ async fn scrape_target(
             }
             if !errors.is_empty() {
                 DEBUG.writes_failed(expected - sent);
-                for err in errors {
-                    debug_error(err);
-                }
+                let mut errors = errors;
+                let err = if errors.len() > 1 {
+                    errors
+                        .swap_remove(0)
+                        .context("first error")
+                        .context(format!("write failed with {} errors", errors.len()))
+                } else {
+                    errors.swap_remove(0).context("write failed")
+                };
+                debug_error(err);
             }
         }
         Err(err) => {
