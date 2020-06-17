@@ -3,6 +3,8 @@ use prost::Message;
 
 use telemetry_prometheus::parser::Sample;
 
+const MILLIS_PER_SECOND: i64 = 1000;
+
 /// Write a batch of samples to the remote write storage backend
 pub async fn write_samples(
     write_url: &str,
@@ -15,7 +17,7 @@ pub async fn write_samples(
     // Build WriteRequest from samples
     let mut timeseries = Vec::new();
     for sample in scraped_samples {
-        let timestamp = sample.timestamp.unwrap_or(default_timestamp);
+        let timestamp = sample.timestamp.unwrap_or(default_timestamp) * MILLIS_PER_SECOND;
         let value = sample.value.to_f64();
         let samples = vec![proto::Sample { timestamp, value }];
         let mut labels = Vec::with_capacity(1 + static_labels.len() + sample.labels.len());
