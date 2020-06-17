@@ -223,6 +223,7 @@ async fn scrape_target(
                 return;
             }
 
+            let expected = samples.len();
             let (sent, errors) = store
                 .write(timestamp, metrics, samples, &static_labels)
                 .await;
@@ -230,7 +231,7 @@ async fn scrape_target(
                 DEBUG.writes_succeeded(sent);
             }
             if !errors.is_empty() {
-                DEBUG.writes_failed(errors.len());
+                DEBUG.writes_failed(expected - sent);
                 for err in errors {
                     debug_error(err);
                 }
