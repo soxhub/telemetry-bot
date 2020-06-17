@@ -198,10 +198,17 @@ async fn scrape_target(
     target: Arc<ScrapeTarget>,
 ) {
     // Get the current timestamp (w/o nanoseconds); we don't need that level of precision
-    let timestamp = {
-        let raw = Utc::now().naive_utc();
-        raw.with_nanosecond(0).unwrap_or(raw).timestamp()
-    };
+    let timestamp = Utc::now().naive_utc().timestamp();
+
+    // Don't collect data samples that that occur before `timestamp_min`.
+    //
+    // They may be duplicates (if they specify their own timestamp),
+    // and attempting to store too-old of series may cause errors on
+    // some storage backends.
+    let max_age = std::cmp::max(
+        target.bookmark(timestamp),
+        timestamp - (5 * 60), // at most ~5 minute old timestamps
+    );
     match target.scrape(SCRAPE_TIMEOUT).await {
         Ok(input) => {
             DEBUG.scrape_succeeded();
@@ -219,16 +226,25 @@ async fn scrape_target(
 
             // Write the samples to the backing storage
             let (metrics, samples) = parser::parse(&input);
+            let total = samples.len();
+            let samples = samples
+                .into_iter()
+                .filter(|d| d.timestamp.map(|t| t >= max_age).unwrap_or(true))
+                .collect::<Vec<_>>();
             if samples.is_empty() {
                 return;
             }
 
             let expected = samples.len();
+            let skipped = total - expected;
             let (sent, errors) = store
                 .write(timestamp, metrics, samples, &static_labels)
                 .await;
             if sent > 0 {
                 DEBUG.writes_succeeded(sent);
+            }
+            if skipped > 0 {
+                DEBUG.writes_skipped(skipped);
             }
             if !errors.is_empty() {
                 DEBUG.writes_failed(expected - sent);

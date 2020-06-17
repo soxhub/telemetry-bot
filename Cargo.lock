@@ -2105,6 +2105,7 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "async-std",
+ "chrono",
  "futures 0.3.5",
  "indexmap",
  "k8s-openapi",

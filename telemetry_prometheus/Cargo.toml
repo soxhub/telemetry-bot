@@ -17,3 +17,4 @@ surf = { version = "2.0.0-alpha.4", default_features = false, features = ["encod
 
 # Enable compatibiltiy with `tokio`-based dependencies (the `kube` crate)
 smol = { version = "0.1.11", features = ["tokio02"] }
+chrono = "0.4.11"

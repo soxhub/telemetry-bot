@@ -9,6 +9,7 @@ pub struct DebugMetrics {
     scrape_errors: AtomicUsize,
     write_count: AtomicUsize,
     write_errors: AtomicUsize,
+    write_skips: AtomicUsize,
 }
 
 impl DebugMetrics {
@@ -20,6 +21,7 @@ impl DebugMetrics {
             scrape_errors: AtomicUsize::new(0),
             write_count: AtomicUsize::new(0),
             write_errors: AtomicUsize::new(0),
+            write_skips: AtomicUsize::new(0),
         }
     }
 
@@ -58,6 +60,14 @@ impl DebugMetrics {
         self.write_errors.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn writes_skipped(&self, n: usize) {
+        self.write_skips.fetch_add(n, Ordering::Relaxed);
+    }
+
+    pub fn write_skipped(&self) {
+        self.write_skips.fetch_add(1, Ordering::Relaxed);
+    }
+
     // Log the current metrics and reset the counters
     pub fn publish(&self) {
         let pod_count = self.pod_count.swap(0, Ordering::Relaxed);
@@ -66,9 +76,10 @@ impl DebugMetrics {
         let scrape_errors = self.scrape_errors.swap(0, Ordering::Relaxed);
         let write_count = self.write_count.swap(0, Ordering::Relaxed);
         let write_errors = self.write_errors.swap(0, Ordering::Relaxed);
+        let write_skips = self.write_skips.swap(0, Ordering::Relaxed);
         println!(
-            "Debug: pods {} (errors {}) | scraped {} (errors {}) | writes {} (errors {})",
-            pod_count, polling_errors, scrape_count, scrape_errors, write_count, write_errors
+            "Debug: pods {} (errors {}) | scraped {} (errors {}) | writes {} (errors {}, skipped {})",
+            pod_count, polling_errors, scrape_count, scrape_errors, write_count, write_errors, write_skips
         );
     }
 }
