@@ -66,3 +66,6 @@ dropdb telemetry -U postgres \
     && psql -U postgres -d telemetry -c 'CREATE EXTENSION timescaledb' \
     && cargo run -p telemetry-schema telemetry-migrate
 ```
+
+## Contributing (GitHub)
+Contributions to Telemetry Bot are welcome, which is licensed and released under the open-source Apache License, Version 2.
