@@ -1,4 +1,4 @@
-# Telemetry Schema
+# Telemetry Remote Write
 This crate implements a telemetry bot storage backend using the
 Prometheus [remote write protocol][1].
 

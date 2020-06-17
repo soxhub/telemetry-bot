@@ -4,6 +4,9 @@ and Jaeger api and exports timeseries to TimescaleDB.
 
 ![Fact Core](doc/bot.png)
 
+## Deployment
+See the [readme](telemetry_bot/README.md) for the CLI.
+
 ## Development
 How do I do `X` in this rust project?
 
