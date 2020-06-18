@@ -12,7 +12,7 @@ and then as usual from the process's environment.
 ```
 STORAGE_TYPE
 
-    Either "standalone" or "remote-write"
+    Either "standalone" or "remote"
 
 KUBERNETES_SERVICE_HOST
 
@@ -23,7 +23,7 @@ KUBERNETES_SERVICE_HOST
 
 REMOTE_WRITE_URL
 
-    When STORAGE_TYPE is "remote-write", this variable is required.
+    When STORAGE_TYPE is "remote", this variable is required.
     The url to send prometheus remote write requests too; it should include the path.
 
     e.g. "https://localhost/write"

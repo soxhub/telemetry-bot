@@ -19,12 +19,12 @@ pub async fn from_env() -> Result<Box<dyn Storage>> {
         .context("missing STORAGE_TYPE")?
         .as_str()
     {
-        "remote-write" => {
+        "remote" => {
             if cfg!(feature = "storage-remote-write") {
                 let storage = RemoteWriteStorage::from_env()?;
                 Ok(Box::new(storage))
             } else {
-                Err(anyhow::format_err!("can't use storage type 'remote-write': must compiled wit 'feature = storage-remote-write"))
+                Err(anyhow::format_err!("can't use storage type 'remote': must compiled wit 'feature = storage-remote-write"))
             }
         }
         "standalone" => {
