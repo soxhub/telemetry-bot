@@ -178,7 +178,6 @@ impl ScrapeList {
         Ok(())
     }
 
-    #[allow(dead_code)] // TODO: Switch to using informer instead of polling
     pub async fn watch(&self) -> Result<()> {
         use kube::api::WatchEvent;
 

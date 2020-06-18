@@ -145,16 +145,31 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
     let watch_interval = {
         let pods = pods.clone();
         async_std::task::spawn(async move {
-            let mut interval = async_std::stream::interval(watch_interval_secs);
-            while let Some(_) = interval.next().await {
-                match pods.refresh().await {
-                    Ok(()) => DEBUG.update_pods(pods.len()),
+            /* Watch pods using Kubenertes informer */
+            loop {
+                match pods.watch().await {
+                    Ok(_) => (),
                     Err(err) => {
                         DEBUG.polling_failed();
-                        debug_error(err);
+                        debug_error(err.into());
+
+                        // On failure, wait WATCH_INTERVAL seconds before retrying
+                        async_std::task::sleep(watch_interval_secs).await;
                     }
                 }
             }
+
+            // /* Watch pods by polling the Kubernetes `list` api */
+            // let mut interval = async_std::stream::interval(watch_interval_secs);
+            // while let Some(_) = interval.next().await {
+            //     match pods.refresh().await {
+            //         Ok(()) => DEBUG.update_pods(pods.len()),
+            //         Err(err) => {
+            //             DEBUG.polling_failed();
+            //             debug_error(err);
+            //         }
+            //     }
+            // }
         })
     };
 
