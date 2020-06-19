@@ -44,30 +44,15 @@ DATABASE_POOL_SIZE
 
 ```
 
-## Discovery Configuration
-These options configure how telemetry bot discovers services to be scraped.
-
-```
-KUBERNETES_SERVICE_HOST
-
-    The hostname of the kubernetes api; usually (but not always) set by kubernetes.
-    Telemetry bot will first attempt to load its kubernetes configuration assuming
-    it is [running in a pod](https://kubernetes.io/docs/tasks/access-application-cluster/access-cluster/#accessing-the-api-from-a-pod),
-    then will fallback to loading configuration from ~/.kube/config.
-
-
-WATCH_INTERVAL
-
-    How frequently (in seconds) to poll or wait before retrying failed requests to
-    the Kubernetes api when querying the list of pods to scrape.
-    (default: 30 seconds)
-
-```
-
 ## Scrape Configuration
 These options configure how telemetry bot collects + scrapes metrics from discovered scrape targets.
 
 ```
+SCRAPE_TARGET
+
+    Specifies a single specific url which should be scraped.
+    If set, telemetry bot will not attempt to discover scrape targets from kubernetes.
+
 SCRAPE_STATIC_LABELS
 
     A comma separated list of static labels to add to every scraped metric.
@@ -83,6 +68,28 @@ SCRAPE_INTERVAL
 
     How frequently (in seconds) to collect timeseries data from "/metrics" endpoints.
     (default: 15 seconds)
+
+```
+
+## Discovery Configuration
+These options configure how telemetry bot discovers services to be scraped.
+
+If `SCRAPE_TARGET` is set, these options are ignored. 
+
+```
+KUBERNETES_SERVICE_HOST
+
+    The hostname of the kubernetes api; usually (but not always) set by kubernetes.
+    Telemetry bot will first attempt to load its kubernetes configuration assuming
+    it is [running in a pod](https://kubernetes.io/docs/tasks/access-application-cluster/access-cluster/#accessing-the-api-from-a-pod),
+    then will fallback to loading configuration from ~/.kube/config.
+
+
+WATCH_INTERVAL
+
+    How frequently (in seconds) to poll or wait before retrying failed requests to
+    the Kubernetes api when querying the list of pods to scrape.
+    (default: 30 seconds)
 
 ```
 
