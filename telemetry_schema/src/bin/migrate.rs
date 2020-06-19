@@ -42,11 +42,13 @@ async fn run_migrations() -> Result<()> {
         }
 
         println!(" - Migration: {}", filename.trim_end_matches(".sql"));
-        for stmt in raw_sql.split(',') {
-            sqlx::query(stmt)
-                .execute(&mut conn)
-                .await
-                .context("error during migration")?;
+        for stmt in raw_sql.split(';') {
+            if !stmt.trim().is_empty() {
+                sqlx::query(stmt)
+                    .execute(&mut conn)
+                    .await
+                    .context("error during migration")?;
+            }
         }
         sqlx::query("INSERT INTO telemetry_schema_migrations (version) VALUES ($1)")
             .bind(version)
