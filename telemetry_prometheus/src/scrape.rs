@@ -27,8 +27,18 @@ pub struct ScrapeTarget {
 }
 
 impl ScrapeTarget {
+    pub fn new(name: String, url: String) -> Self {
+        let timestamp = Utc::now().naive_utc().timestamp();
+        ScrapeTarget {
+            name,
+            url,
+            labels: Vec::new(),
+            last_scrape: AtomicI64::new(timestamp),
+        }
+    }
+
     // Performs equality comparison using metadata, excluding tracking state (e.g. `last_scrape`)
-    fn metadata_eq(&self, other: &Self) -> bool {
+    pub fn metadata_eq(&self, other: &Self) -> bool {
         self.name == other.name && self.url == other.url && self.labels == other.labels
     }
 }

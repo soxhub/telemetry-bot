@@ -122,13 +122,23 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
     let store: &'static _ = Box::leak(storage::from_env().await?);
 
     // Collect the list of pods to be scraped for metrics
-    println!("Loading scrape targets...");
-    let kube_client = kube::Client::try_default()
-        .await
-        .context("reading kubernetes api config")?;
-    let pods = ScrapeList::shared(kube_client);
-    pods.refresh().await.context("listing prometheus pods")?;
-    println!("Loaded {} scrape targets...", pods.len());
+    let scrape_url = dotenv::var("SCRAPE_TARGET").ok();
+    let pods = if let Some(scrape_url) = &scrape_url {
+        let kube_client = kube::Client::new(kube::Config::new("https://localhost".parse().unwrap()));
+        let pods = ScrapeList::shared(kube_client);
+        pods.update(vec![ScrapeTarget::new("default".into(), scrape_url.into())]);
+        println!("Target: {}", scrape_url);
+        pods
+    } else {
+        println!("Loading scrape targets...");
+        let kube_client = kube::Client::try_default()
+            .await
+            .context("reading kubernetes api config")?;
+        let pods = ScrapeList::shared(kube_client);
+        pods.refresh().await.context("listing prometheus pods")?;
+        println!("Loaded {} scrape targets...", pods.len());
+        pods
+    };
 
     // Every debug interval, log debug informationc
     let debug_interval = match debug_interval_secs {
@@ -142,9 +152,9 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
     };
 
     // Every WATCH_INTERVAL, update our list of pods
-    let watch_interval = {
+    let watch_interval = if scrape_url.is_none() {
         let pods = pods.clone();
-        async_std::task::spawn(async move {
+        Some(async_std::task::spawn(async move {
             /* Watch pods using Kubenertes informer */
             loop {
                 match pods.watch().await {
@@ -170,7 +180,9 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
             //         }
             //     }
             // }
-        })
+        }))
+    } else {
+        None
     };
 
     // Every SCRAPE_INTERVAL (at most), scrape each endpoint and write it to the database
@@ -198,8 +210,10 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
 
     // Shutdown when the process is killed
     shutdown.await?;
-    watch_interval.cancel().await;
     scrape_interval.cancel().await;
+    if let Some(watch_interval) = watch_interval{
+        watch_interval.cancel().await;
+    }
     if let Some(debug_interval) = debug_interval {
         debug_interval.cancel().await;
     }

@@ -40,12 +40,6 @@ How do I do `X` in this rust project?
     cargo run -p telemetry-schema telemetry-migrate
     ```
 
-3. Ensure you are configured to connect to kubernetes
-
-    ```sh
-    test -f ~/.kube/config && echo "Ok" || echo "Missing config"
-    ```
-
 ### Workflow
 Common rust commands:
 
