@@ -252,8 +252,9 @@ impl ScrapeList {
                     }
                 }
                 WatchEvent::Bookmark(_) => (),
-                WatchEvent::Error(_err) => {
-                    // panic!("WatchEvent error: {:?}", e);
+                WatchEvent::Error(err) => {
+                    DEBUG.polling_failed();
+                    debug_error(anyhow::Error::new(err).context("watching pod list"));
                 }
             }
         }
