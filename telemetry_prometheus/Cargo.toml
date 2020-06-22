@@ -19,3 +19,4 @@ url = "2.1.1"
 
 # Enable compatibiltiy with `tokio`-based dependencies (the `kube` crate)
 smol = { version = "0.1.11", features = ["tokio02"] }
+thiserror = "1.0.20"

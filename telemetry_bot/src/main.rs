@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use telemetry_prometheus::debug::DEBUG;
 use telemetry_prometheus::error::{debug_error, debug_error_enabled};
 use telemetry_prometheus::parser;
-use telemetry_prometheus::scrape::{ScrapeList, ScrapeTarget};
+use telemetry_prometheus::scrape::{ScrapeError, ScrapeList, ScrapeTarget};
 
 use crate::storage::Storage;
 
@@ -284,9 +284,12 @@ async fn scrape_target(
                 debug_error(err);
             }
         }
+        Err(ScrapeError::Timeout) => {
+            DEBUG.scrape_timeout();
+        }
         Err(err) => {
             DEBUG.scrape_failed();
-            debug_error(err);
+            debug_error(err.into());
         }
     }
 }

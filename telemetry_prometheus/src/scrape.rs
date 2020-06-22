@@ -7,9 +7,20 @@ use k8s_openapi::api::core::v1 as k8s;
 use parking_lot::Mutex; // faster Mutex for non-contentious access
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
+use thiserror::Error;
 
 use crate::debug::DEBUG;
 use crate::error::debug_error;
+
+#[derive(Error, Debug)]
+pub enum ScrapeError {
+    #[error("failed to scrape: {0}")]
+    Failed(surf::Error),
+    #[error("scrape timed out")]
+    Timeout,
+}
+
+pub type ScrapeResult = std::result::Result<String, ScrapeError>;
 
 pub struct ScrapeTarget {
     pub name: String,
@@ -100,15 +111,15 @@ impl ScrapeTarget {
     }
 
     /// Make a request to the scrape target and return the response
-    pub async fn scrape(&self, timeout: std::time::Duration) -> Result<String> {
+    pub async fn scrape(&self, timeout: std::time::Duration) -> ScrapeResult {
         async_std::future::timeout(timeout, async {
             surf::get(&self.url)
                 .recv_string()
                 .await
-                .map_err(|err| anyhow::format_err!("failed to scrape: {}", err))
+                .map_err(ScrapeError::Failed)
         })
         .await
-        .map_err(|err| anyhow::format_err!("failed to scrape: {}", err))?
+        .map_err(|_| ScrapeError::Timeout)?
     }
 }
 
