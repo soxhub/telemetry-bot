@@ -198,63 +198,97 @@ impl ScrapeList {
         let informer = kube::runtime::Informer::new(self.api.clone()).params(options);
 
         // Poll events forever
-        let mut events_stream = informer.poll().await?.boxed();
-        loop {
-            let event = match events_stream.try_next().await {
-                Ok(Some(event)) => event,
-                Ok(None) => continue,
+        let mut reset = true;
+        'poll: loop {
+            if reset {
+                // When refresh fails, log the error but continue anyways
+                match self.refresh().await {
+                    Ok(()) => (),
+                    Err(err) => {
+                        DEBUG.polling_failed();
+                        debug_error(err.into());
+                    }
+                }
+            }
+
+            let mut stream = match informer.poll().await {
+                Ok(fut) => fut.boxed(),
                 Err(err) => {
                     DEBUG.polling_failed();
                     debug_error(err.into());
-                    continue;
+                    reset = true;
+
+                    // If polling itself fails, sleep 10 seconds and try again
+                    async_std::task::sleep(std::time::Duration::from_secs(10)).await;
+                    continue 'poll;
                 }
             };
-            match event {
-                // When a pod was added or modified, check if it should be present in the list
-                WatchEvent::Added(pod) | WatchEvent::Modified(pod) => {
-                    if let Some(target_name) =
-                        pod.metadata.as_ref().and_then(|meta| meta.name.clone())
-                    {
-                        // If the pod is a scrape target add it to the scrape target list
-                        if let Some(target) = ScrapeTarget::from_pod(pod) {
-                            let target = Arc::new(target);
-                            let mut map = self.map.lock();
-                            match map.get(&target_name) {
-                                // Do nothing if the metadata hasn't changed
-                                Some(prev) if target.metadata_eq(prev) => (),
-                                // Otherwise, update the internal map and list state
-                                _ => {
-                                    map.insert(target_name, target);
-                                    self.list.store(Arc::new(map.values().cloned().collect()));
+            'receive_events: loop {
+                let event = match stream.try_next().await {
+                    Ok(Some(event)) => event,
+                    Ok(None) => break 'receive_events,
+                    Err(err) => {
+                        DEBUG.polling_failed();
+                        debug_error(err.into());
+                        reset = true;
+                        break 'receive_events;
+                    }
+                };
+                match event {
+                    // When a pod was added or modified, check if it should be present in the list
+                    WatchEvent::Added(pod) | WatchEvent::Modified(pod) => {
+                        if let Some(target_name) =
+                            pod.metadata.as_ref().and_then(|meta| meta.name.clone())
+                        {
+                            // If the pod is a scrape target add it to the scrape target list
+                            if let Some(target) = ScrapeTarget::from_pod(pod) {
+                                let target = Arc::new(target);
+                                let mut map = self.map.lock();
+                                match map.get(&target_name) {
+                                    // Do nothing if the metadata hasn't changed
+                                    Some(prev) if target.metadata_eq(prev) => (),
+                                    // Otherwise, update the internal map and list state
+                                    _ => {
+                                        map.insert(target_name, target);
+                                        let list = map.values().cloned().collect::<Vec<_>>();
+                                        DEBUG.update_pods(list.len());
+                                        self.list.store(Arc::new(list));
+                                    }
+                                }
+                            }
+                            // Otherwise, if it was previously in the list, remove it
+                            else {
+                                let mut map = self.map.lock();
+                                if map.contains_key(&target_name) {
+                                    map.remove(&target_name);
+                                    let list = map.values().cloned().collect::<Vec<_>>();
+                                    DEBUG.update_pods(list.len());
+                                    self.list.store(Arc::new(list));
                                 }
                             }
                         }
-                        // Otherwise, if it was previously in the list, remove it
-                        else {
+                    }
+                    // When a pod is removed, remove it from the list
+                    WatchEvent::Deleted(pod) => {
+                        if let Some(target_name) =
+                            pod.metadata.as_ref().and_then(|meta| meta.name.clone())
+                        {
                             let mut map = self.map.lock();
                             if map.contains_key(&target_name) {
                                 map.remove(&target_name);
-                                self.list.store(Arc::new(map.values().cloned().collect()));
+                                let list = map.values().cloned().collect::<Vec<_>>();
+                                DEBUG.update_pods(list.len());
+                                self.list.store(Arc::new(list));
                             }
                         }
                     }
-                }
-                // When a pod is removed, remove it from the list
-                WatchEvent::Deleted(pod) => {
-                    if let Some(target_name) =
-                        pod.metadata.as_ref().and_then(|meta| meta.name.clone())
-                    {
-                        let mut map = self.map.lock();
-                        if map.contains_key(&target_name) {
-                            map.remove(&target_name);
-                            self.list.store(Arc::new(map.values().cloned().collect()));
-                        }
+                    WatchEvent::Bookmark(_) => (),
+                    WatchEvent::Error(err) => {
+                        DEBUG.polling_failed();
+                        debug_error(anyhow::Error::new(err).context("watching pod list"));
+                        reset = true;
+                        break 'receive_events;
                     }
-                }
-                WatchEvent::Bookmark(_) => (),
-                WatchEvent::Error(err) => {
-                    DEBUG.polling_failed();
-                    debug_error(anyhow::Error::new(err).context("watching pod list"));
                 }
             }
         }

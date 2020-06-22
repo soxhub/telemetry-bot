@@ -124,7 +124,8 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
     // Collect the list of pods to be scraped for metrics
     let scrape_url = dotenv::var("SCRAPE_TARGET").ok();
     let pods = if let Some(scrape_url) = &scrape_url {
-        let kube_client = kube::Client::new(kube::Config::new("https://localhost".parse().unwrap()));
+        let kube_client =
+            kube::Client::new(kube::Config::new("https://localhost".parse().unwrap()));
         let pods = ScrapeList::shared(kube_client);
         pods.update(vec![ScrapeTarget::new("default".into(), scrape_url.into())]);
         println!("Target: {}", scrape_url);
@@ -211,7 +212,7 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
     // Shutdown when the process is killed
     shutdown.await?;
     scrape_interval.cancel().await;
-    if let Some(watch_interval) = watch_interval{
+    if let Some(watch_interval) = watch_interval {
         watch_interval.cancel().await;
     }
     if let Some(debug_interval) = debug_interval {
