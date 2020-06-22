@@ -9,20 +9,15 @@ use futures::stream::StreamExt;
 use heck::SnakeCase;
 use parallel_stream::prelude::*;
 use std::cell::Cell;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use telemetry_prometheus::debug::DEBUG;
-use telemetry_prometheus::error::debug_error;
+use telemetry_prometheus::error::{debug_error, debug_error_enabled};
 use telemetry_prometheus::parser;
 use telemetry_prometheus::scrape::{ScrapeList, ScrapeTarget};
 
 use crate::storage::Storage;
-
-/// Whether to log (verbose) error output.
-/// Use the `ERROR_LOGGER` env var to override (on, off)
-static ERROR_LOGGER: AtomicBool = AtomicBool::new(false);
 
 /// How frequently to collect metric timeseries data.
 /// Use the `DEBUG_INTERVAL` env var to override (on, off, NUM_SECONDS)
@@ -63,13 +58,12 @@ fn main() -> Result<()> {
 /// The main thread's event loop
 async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
     // Load configuration from environment variables
-    let error_logger_enabled = match dotenv::var("ERROR_LOGGER").ok() {
+    debug_error_enabled(match dotenv::var("ERROR_LOGGER").ok() {
         Some(val) if val == "true" || val == "on" || val == "1" => true,
         Some(val) if val == "false" || val == "off" || val == "0" || val == "" => false,
         Some(val) => val.parse::<bool>().context("invalid ERROR_LOGGER")?,
         None => false,
-    };
-    ERROR_LOGGER.store(error_logger_enabled, Ordering::Relaxed);
+    });
     let debug_interval_secs = match dotenv::var("DEBUG_INTERVAL").ok() {
         None => Some(DEFAULT_DEBUG_INTERVAL),
         Some(val) if val == "true" || val == "on" || val == "1" => Some(DEFAULT_DEBUG_INTERVAL),
