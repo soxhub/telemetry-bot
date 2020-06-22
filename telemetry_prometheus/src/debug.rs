@@ -8,6 +8,7 @@ pub struct DebugMetrics {
     scrape_count: AtomicUsize,
     scrape_errors: AtomicUsize,
     scrape_timeouts: AtomicUsize,
+    scrape_disconnects: AtomicUsize,
     write_count: AtomicUsize,
     write_errors: AtomicUsize,
     write_skips: AtomicUsize,
@@ -21,6 +22,7 @@ impl DebugMetrics {
             scrape_count: AtomicUsize::new(0),
             scrape_errors: AtomicUsize::new(0),
             scrape_timeouts: AtomicUsize::new(0),
+            scrape_disconnects: AtomicUsize::new(0),
             write_count: AtomicUsize::new(0),
             write_errors: AtomicUsize::new(0),
             write_skips: AtomicUsize::new(0),
@@ -40,12 +42,15 @@ impl DebugMetrics {
     }
 
     pub fn scrape_failed(&self) {
-        self.scrape_count.fetch_add(1, Ordering::Relaxed);
         self.scrape_errors.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn scrape_timeout(&self) {
         self.scrape_timeouts.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn scrape_refused(&self) {
+        self.scrape_disconnects.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn writes_succeeded(&self, n: usize) {
@@ -57,12 +62,10 @@ impl DebugMetrics {
     }
 
     pub fn writes_failed(&self, n: usize) {
-        self.write_count.fetch_add(n, Ordering::Relaxed);
         self.write_errors.fetch_add(n, Ordering::Relaxed);
     }
 
     pub fn write_failed(&self) {
-        self.write_count.fetch_add(1, Ordering::Relaxed);
         self.write_errors.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -81,12 +84,21 @@ impl DebugMetrics {
         let scrape_count = self.scrape_count.swap(0, Ordering::Relaxed);
         let scrape_errors = self.scrape_errors.swap(0, Ordering::Relaxed);
         let scrape_timeouts = self.scrape_timeouts.swap(0, Ordering::Relaxed);
+        let scrape_disconnects = self.scrape_timeouts.swap(0, Ordering::Relaxed);
         let write_count = self.write_count.swap(0, Ordering::Relaxed);
         let write_errors = self.write_errors.swap(0, Ordering::Relaxed);
         let write_skips = self.write_skips.swap(0, Ordering::Relaxed);
         println!(
-            "Debug: pods {} (errors {}) | scraped {} (errors {}, timeouts {}) | writes {} (errors {}, skipped {})",
-            pod_count, polling_errors, scrape_count, scrape_errors, scrape_timeouts, write_count, write_errors, write_skips
+            "Debug: pods {} (errors {}) | scraped {} (errors {}, timeouts {}, disconnects {}) | writes {} (errors {}, skipped {})",
+            pod_count,
+            polling_errors,
+            scrape_count,
+            scrape_errors,
+            scrape_timeouts,
+            scrape_disconnects,
+            write_count,
+            write_errors,
+            write_skips
         );
     }
 }

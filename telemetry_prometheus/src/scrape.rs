@@ -297,7 +297,7 @@ impl ScrapeList {
                     WatchEvent::Bookmark(_) => (),
                     WatchEvent::Error(err) => {
                         DEBUG.polling_failed();
-                        debug_error(anyhow::Error::new(err).context("watching pod list"));
+                        debug_error(anyhow::Error::new(err).context("error watching pod list"));
                         reset = true;
                         break 'receive_events;
                     }

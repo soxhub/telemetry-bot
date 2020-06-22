@@ -130,7 +130,9 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
             .await
             .context("reading kubernetes api config")?;
         let pods = ScrapeList::shared(kube_client);
-        pods.refresh().await.context("listing prometheus pods")?;
+        pods.refresh()
+            .await
+            .context("error listing prometheus pods")?;
         println!("Loaded {} scrape targets...", pods.len());
         pods
     };
@@ -286,6 +288,9 @@ async fn scrape_target(
         }
         Err(ScrapeError::Timeout) => {
             DEBUG.scrape_timeout();
+        }
+        Err(err) if err.to_string().contains("Connection refused") => {
+            DEBUG.scrape_refused();
         }
         Err(err) => {
             DEBUG.scrape_failed();
