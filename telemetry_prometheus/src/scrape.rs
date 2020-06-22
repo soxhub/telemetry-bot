@@ -144,6 +144,10 @@ impl ScrapeList {
         Arc::new(Self { api, map, list })
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.list.load().is_empty()
+    }
+
     pub fn len(&self) -> usize {
         self.list.load().len()
     }
@@ -181,9 +185,7 @@ impl ScrapeList {
 
     pub async fn refresh(&self) -> Result<()> {
         // Get list of pods from prometheus
-        let options = kube::api::ListParams::default()
-            .timeout(15)
-            .labels("telemetry=true");
+        let options = kube::api::ListParams::default().timeout(15);
         let pods = self.api.list(&options).await?;
 
         // Collect pods scrape configuration
@@ -203,19 +205,20 @@ impl ScrapeList {
     pub async fn watch(&self) -> Result<()> {
         use kube::api::WatchEvent;
 
-        // Refresh once immediately
-        self.refresh().await?;
+        // Refresh once immediately, if we haven't already
+        if self.is_empty() {
+            self.refresh().await?;
+        }
 
         // Watch for changes to the set of pods
-        let options = kube::api::ListParams::default()
-            .timeout(15)
-            .labels("telemetry=true");
+        let options = kube::api::ListParams::default().timeout(15);
         let informer = kube::runtime::Informer::new(self.api.clone()).params(options);
 
         // Poll events forever
         let mut reset = false;
         'poll: loop {
             if reset {
+                reset = false;
                 DEBUG.polling_reset();
 
                 // When refresh fails, log the error but continue anyways
