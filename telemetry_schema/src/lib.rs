@@ -53,7 +53,7 @@ impl SeriesSchema {
     pub async fn insert(
         &self,
         db: &sqlx::postgres::PgPool,
-        time: chrono::NaiveDateTime,
+        time: chrono::DateTime<chrono::Utc>,
         sample: Sample<'_>,
         extra_labels: &[(String, String)],
     ) -> Result<()> {

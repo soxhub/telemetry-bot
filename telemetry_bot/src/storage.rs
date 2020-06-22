@@ -140,14 +140,14 @@ impl StandaloneStorage {
 
     async fn write_sample(
         &self,
-        default_timestamp: NaiveDateTime,
+        default_timestamp: DateTime<Utc>,
         sample: Sample<'_>,
         static_labels: &[(String, String)],
         metric_types: &MetricTypes<'_>,
     ) -> Result<bool> {
         let time = sample
             .timestamp
-            .map(|t| NaiveDateTime::from_timestamp(t, 0))
+            .map(|t| DateTime::from_utc(NaiveDateTime::from_timestamp(t, 0), Utc))
             .unwrap_or(default_timestamp);
 
         // Load the table for this metric
@@ -211,7 +211,10 @@ impl StandaloneStorage {
         // We need to reserve 11 extra characters for constraint and index names
         if series.table.len() > (63 - 11) {
             // FIXME: Instead we should truncate the table_name and append a unique ID
-            eprintln!("Warn: Cannot store metric '{}', metric name too long", series.table);
+            eprintln!(
+                "Warn: Cannot store metric '{}', metric name too long",
+                series.table
+            );
             series.poison();
         }
 
@@ -231,11 +234,12 @@ impl Storage for StandaloneStorage {
     ) -> (usize, Vec<Error>) {
         let mut sent = 0;
         let mut errors = Vec::new();
-        let default_timestamp = NaiveDateTime::from_timestamp(default_timestamp, 0);
+        let default_timestamp =
+            DateTime::from_utc(NaiveDateTime::from_timestamp(default_timestamp, 0), Utc);
         for sample in sample_batch {
             let time = sample
                 .timestamp
-                .map(|t| NaiveDateTime::from_timestamp(t, 0))
+                .map(|t| DateTime::from_utc(NaiveDateTime::from_timestamp(t, 0), Utc))
                 .unwrap_or(default_timestamp);
             match self
                 .write_sample(time, sample, static_labels, &metric_types)
