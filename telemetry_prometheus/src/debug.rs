@@ -85,7 +85,7 @@ impl DebugMetrics {
 
     // Log the current metrics and reset the counters
     pub fn publish(&self) {
-        let pod_count = self.pod_count.swap(0, Ordering::Relaxed);
+        let pod_count = self.pod_count.load(Ordering::Relaxed);
         let polling_errors = self.polling_errors.swap(0, Ordering::Relaxed);
         let polling_resets = self.polling_resets.swap(0, Ordering::Relaxed);
         let scrape_count = self.scrape_count.swap(0, Ordering::Relaxed);
