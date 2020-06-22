@@ -159,6 +159,7 @@ impl ScrapeList {
 
         // Update ScrapeList stored data
         *map_ptr = new_map;
+        DEBUG.update_pods(new_list.len());
         self.list.store(Arc::new(new_list));
 
         // Release lock only after updating `list`.
