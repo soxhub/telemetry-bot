@@ -144,7 +144,7 @@ impl StandaloneStorage {
         sample: Sample<'_>,
         static_labels: &[(String, String)],
         metric_types: &MetricTypes<'_>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let time = sample
             .timestamp
             .map(|t| NaiveDateTime::from_timestamp(t, 0))
@@ -165,10 +165,16 @@ impl StandaloneStorage {
 
         // Insert the data point
         if let Some(table) = table {
-            table.insert(self.db, time, sample, static_labels).await?;
+            if let Err(err) = table.insert(self.db, time, sample, static_labels).await {
+                if table.poisoned() {
+                    return Ok(false);
+                } else {
+                    return Err(err);
+                }
+            }
         }
 
-        Ok(())
+        Ok(true)
     }
 
     fn build_series(
@@ -177,15 +183,7 @@ impl StandaloneStorage {
         static_labels: &[(String, String)],
     ) -> SeriesSchema {
         let name = sample.name.to_owned();
-
-        // Postgres table names have a max length of 63 characters.
-        //
-        // We truncate to 48 characters so that we can have useful index names for the table.
-        let table = {
-            let mut snake_name = name.to_snake_case();
-            snake_name.truncate(48);
-            snake_name.trim_end_matches('_').to_owned()
-        };
+        let table = name.to_snake_case();
 
         // Collect the list of expected labels from a sample measurement
         let mut labels = Vec::new();
@@ -205,7 +203,19 @@ impl StandaloneStorage {
                 labels.push(label.to_string());
             }
         }
-        SeriesSchema::new(name, table, type_, labels, false)
+
+        // Build the series
+        let series = SeriesSchema::new(name, table, type_, labels, false);
+
+        // Postgres table names have a max length of 63 characters.
+        // We need to reserve 11 extra characters for constraint and index names
+        if series.table.len() > (63 - 11) {
+            // FIXME: Instead we should truncate the table_name and append a unique ID
+            eprintln!("Warn: Cannot store metric '{}', metric name too long", series.table);
+            series.poison();
+        }
+
+        series
     }
 }
 
@@ -231,7 +241,8 @@ impl Storage for StandaloneStorage {
                 .write_sample(time, sample, static_labels, &metric_types)
                 .await
             {
-                Ok(()) => sent += 1,
+                Ok(false) => (), // skipped
+                Ok(true) => sent += 1,
                 Err(err) => errors.push(err),
             }
         }

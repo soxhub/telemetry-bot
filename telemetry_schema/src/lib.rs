@@ -12,6 +12,7 @@ pub struct SeriesSchema {
     pub series: SeriesType,
     pub labels: Vec<String>,
     exists: atomic::AtomicBool,
+    poison: atomic::AtomicUsize,
     create: Mutex<()>,
 }
 
@@ -29,6 +30,7 @@ impl SeriesSchema {
             series,
             labels,
             exists: atomic::AtomicBool::new(exists),
+            poison: atomic::AtomicUsize::new(0),
             create: Mutex::new(()),
         }
     }
@@ -36,6 +38,16 @@ impl SeriesSchema {
     #[inline]
     pub fn exists(&self) -> bool {
         self.exists.load(atomic::Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub fn poisoned(&self) -> bool {
+        self.poison.load(atomic::Ordering::Relaxed) > 1
+    }
+
+    #[inline]
+    pub fn poison(&self) {
+        self.poison.store(2, atomic::Ordering::Relaxed);
     }
 
     pub async fn insert(
@@ -48,9 +60,16 @@ impl SeriesSchema {
         // Check the table has been created with `exists()` which is faster
         // than calling `create_if_not_exists` if the table already exists.
         if !self.exists() {
-            self.create_if_not_exists(db)
-                .await
-                .context("SeriesSchema::create_if_not_exists")?;
+            if self.poisoned() {
+                return Err(anyhow::format_err!("cannot create tables for metric"));
+            }
+            match self.create_if_not_exists(db).await {
+                Ok(()) => (),
+                Err(err) => {
+                    self.poison.fetch_add(1, atomic::Ordering::SeqCst);
+                    return Err(err.context("SeriesSchema::create_if_not_exists"));
+                }
+            }
         }
 
         // Collect columns from labels
