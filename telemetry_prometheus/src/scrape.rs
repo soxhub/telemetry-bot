@@ -203,6 +203,9 @@ impl ScrapeList {
     pub async fn watch(&self) -> Result<()> {
         use kube::api::WatchEvent;
 
+        // Refresh once immediately
+        self.refresh().await?;
+
         // Watch for changes to the set of pods
         let options = kube::api::ListParams::default()
             .timeout(15)
@@ -210,9 +213,11 @@ impl ScrapeList {
         let informer = kube::runtime::Informer::new(self.api.clone()).params(options);
 
         // Poll events forever
-        let mut reset = true;
+        let mut reset = false;
         'poll: loop {
             if reset {
+                DEBUG.polling_reset();
+
                 // When refresh fails, log the error but continue anyways
                 match self.refresh().await {
                     Ok(()) => (),
