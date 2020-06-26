@@ -4,7 +4,6 @@ mod storage;
 
 use anyhow::{Context, Result}; // alias std::result::Result with dynamic error type
 use chrono::prelude::*;
-use futures::channel::oneshot;
 use futures::stream::StreamExt;
 use heck::SnakeCase;
 use parallel_stream::prelude::*;
@@ -36,14 +35,14 @@ const SCRAPE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// The program's main entry point.
 fn main() -> Result<()> {
-    let (send_shutdown, recv_shutdown) = oneshot::channel::<()>();
-
     // When we receive a SIGINT (or SIGTERM) signal, begin exiting.
+    let (send_shutdown, recv_shutdown) = piper::chan::<()>(0);
     let signal_once = Cell::new(Some(send_shutdown));
     ctrlc::set_handler(move || {
         // The first time we receive the signal, shutdown gracefully
         if let Some(sender) = signal_once.take() {
-            sender.send(()).expect("failed to shutdown");
+            // Closing the channel will cause the sender to shutdown
+            std::mem::drop(sender);
         }
         // The second time we receive the signal, shutdown immediately
         else {
@@ -51,12 +50,22 @@ fn main() -> Result<()> {
         }
     })?;
 
+    // Create a work-stealing thread pool.
+    let num_threads = num_cpus::get().max(1);
+    let mut threads = Vec::with_capacity(num_threads);
+    for _ in 0..num_threads {
+        let shutdown = recv_shutdown.clone();
+        threads.push(std::thread::spawn(move || {
+            async_std::task::block_on(shutdown.recv())
+        }));
+    }
+
     // Start the main event loop
     async_std::task::block_on(run(recv_shutdown))
 }
 
 /// The main thread's event loop
-async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
+async fn run(shutdown: piper::Receiver<()>) -> Result<()> {
     // Load configuration from environment variables
     debug_error_enabled(match dotenv::var("ERROR_LOGGER").ok() {
         Some(val) if val == "true" || val == "on" || val == "1" => true,
@@ -206,7 +215,7 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
     });
 
     // Shutdown when the process is killed
-    shutdown.await?;
+    shutdown.recv().await;
     scrape_interval.cancel().await;
     if let Some(watch_interval) = watch_interval {
         watch_interval.cancel().await;

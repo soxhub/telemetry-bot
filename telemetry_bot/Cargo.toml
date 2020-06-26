@@ -18,14 +18,17 @@ storage-timescale-standalone = ["telemetry-schema"]
 [dependencies]
 anyhow = "1.0.31"
 async-std = "1.5.0"
+async-trait = "0.1.35"
 chrono = "0.4.11"
 ctrlc = { version = "3.1.4", features = ["termination"] } # handle SIGINT (and SIGTERM)
 dotenv = "0.15.0"
 futures = "0.3.5"
 heck = "0.3.1"
 kube = { version = "0.34.0", default-features = false, features = ["rustls-tls"] }
+num_cpus = "1.13.0"
 parallel-stream = "2.1.1"
 parking_lot = "0.10.2"
+piper = "0.1.3"
 sqlx = { version = "0.3.5", features = ["postgres", "tls"] }
 
 # Local dependencies
@@ -35,4 +38,3 @@ telemetry-schema = { path = "../telemetry_schema", optional = true }
 
 # Enable compatibiltiy with `tokio`-based dependencies (the `kube` crate)
 smol = { version = "0.1.11", features = ["tokio02"] }
-async-trait = "0.1.35"
