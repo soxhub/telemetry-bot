@@ -62,7 +62,7 @@ SCRAPE_STATIC_LABELS
 SCRAPE_CONCURRENCY
 
     The maximum number of network sockets to use for requests to "/metrics".
-    (default: 128)
+    (default: 4096)
 
 SCRAPE_INTERVAL
 

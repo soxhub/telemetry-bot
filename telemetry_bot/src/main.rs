@@ -109,7 +109,7 @@ async fn run(shutdown: oneshot::Receiver<()>) -> Result<()> {
     let scrape_static_labels: &'static _ = Box::leak(scrape_static_labels.into_boxed_slice());
     let scrape_concurrency: usize = match dotenv::var("SCRAPE_CONCURRENCY").ok() {
         Some(val) => val.parse().context("invalid SCRAPE_CONCURRENCY")?,
-        None => 128,
+        None => 4096,
     };
 
     // Connect to storage provider
