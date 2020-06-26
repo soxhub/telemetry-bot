@@ -193,6 +193,20 @@ async fn run(shutdown: piper::Receiver<()>) -> Result<()> {
 
     // Every SCRAPE_INTERVAL (at most), scrape each endpoint and write it to the database
     let scrape_interval = async_std::task::spawn(async move {
+        // Attempt to align scrapes to a 5 second interval
+        let spawn_ts = Utc::now();
+        if spawn_ts.timestamp() % 5 > 0 {
+            let start_ts = spawn_ts + chrono::Duration::seconds(5);
+            let start_ts = start_ts
+                .with_second((start_ts.second() / 5) * 5)
+                .and_then(|ts| ts.with_nanosecond(0))
+                .unwrap_or(start_ts);
+            if let Ok(sleep) = (start_ts - spawn_ts).to_std() {
+                async_std::task::sleep(sleep).await;
+            }
+        }
+
+        // Begin scraping
         loop {
             let start = Instant::now();
 
@@ -203,8 +217,9 @@ async fn run(shutdown: piper::Receiver<()>) -> Result<()> {
             targets
                 .into_par_stream()
                 .limit(scrape_concurrency)
-                .map(move |target| scrape_target(store, scrape_static_labels, Arc::clone(&target)))
-                .collect::<Vec<()>>()
+                .for_each(move |target| {
+                    scrape_target(store, scrape_static_labels, Arc::clone(&target))
+                })
                 .await;
 
             // Sleep until the next scrape interval
