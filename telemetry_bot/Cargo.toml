@@ -38,3 +38,4 @@ telemetry-schema = { path = "../telemetry_schema", optional = true }
 
 # Enable compatibiltiy with `tokio`-based dependencies (the `kube` crate)
 smol = { version = "0.1.11", features = ["tokio02"] }
+structopt = "0.3.15"

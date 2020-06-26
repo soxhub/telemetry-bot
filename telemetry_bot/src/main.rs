@@ -1,40 +1,29 @@
 //! Telemetry Bot
 
+mod config;
 mod storage;
 
 use anyhow::{Context, Result}; // alias std::result::Result with dynamic error type
 use chrono::prelude::*;
 use futures::stream::StreamExt;
-use heck::SnakeCase;
 use parallel_stream::prelude::*;
 use std::cell::Cell;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use telemetry_prometheus::debug::DEBUG;
 use telemetry_prometheus::error::{debug_error, debug_error_enabled};
 use telemetry_prometheus::parser;
 use telemetry_prometheus::scrape::{ScrapeError, ScrapeList, ScrapeTarget};
 
+use crate::config::*;
 use crate::storage::Storage;
-
-/// How frequently to collect metric timeseries data.
-/// Use the `DEBUG_INTERVAL` env var to override (on, off, NUM_SECONDS)
-const DEFAULT_DEBUG_INTERVAL: Duration = Duration::from_secs(300);
-
-/// How frequently to update our pod list.
-/// Use the `WATCH_INTERVAL` env var to override.
-const DEFAULT_WATCH_INTERVAL: Duration = Duration::from_secs(30);
-
-/// How frequently to collect metric timeseries data.
-/// Use the `SCRAPE_INTERVAL` env var to override.
-const DEFAULT_SCRAPE_INTERVAL: Duration = Duration::from_secs(15);
-
-/// How long to wait before skipping a scrape endpoint.
-const SCRAPE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// The program's main entry point.
 fn main() -> Result<()> {
+    let config = Config::load()?;
+    debug_error_enabled(config.debug);
+
     // When we receive a SIGINT (or SIGTERM) signal, begin exiting.
     let (send_shutdown, recv_shutdown) = piper::chan::<()>(0);
     let signal_once = Cell::new(Some(send_shutdown));
@@ -61,72 +50,19 @@ fn main() -> Result<()> {
     }
 
     // Start the main event loop
-    async_std::task::block_on(run(recv_shutdown))
+    async_std::task::block_on(run(config, recv_shutdown))
 }
 
 /// The main thread's event loop
-async fn run(shutdown: piper::Receiver<()>) -> Result<()> {
-    // Load configuration from environment variables
-    debug_error_enabled(match dotenv::var("ERROR_LOGGER").ok() {
-        Some(val) if val == "true" || val == "on" || val == "1" => true,
-        Some(val) if val == "false" || val == "off" || val == "0" || val == "" => false,
-        Some(val) => val.parse::<bool>().context("invalid ERROR_LOGGER")?,
-        None => false,
-    });
-    let debug_interval_secs = match dotenv::var("DEBUG_INTERVAL").ok() {
-        None => Some(DEFAULT_DEBUG_INTERVAL),
-        Some(val) if val == "true" || val == "on" || val == "1" => Some(DEFAULT_DEBUG_INTERVAL),
-        Some(val) if val == "false" || val == "off" || val == "0" || val == "" => None,
-        Some(val) => {
-            let secs = val.parse().context("invalid DEBUG_INTERVAL")?;
-            Some(Duration::from_secs(secs))
-        }
-    };
-    let watch_interval_secs = match dotenv::var("WATCH_INTERVAL").ok() {
-        Some(val) => {
-            let secs = val.parse().context("invalid WATCH_INTERVAL")?;
-            Duration::from_secs(secs)
-        }
-        None => DEFAULT_WATCH_INTERVAL,
-    };
-    let scrape_interval_secs = match dotenv::var("SCRAPE_INTERVAL").ok() {
-        Some(val) => {
-            let secs = val.parse().context("invalid SCRAPE_INTERVAL")?;
-            Duration::from_secs(secs)
-        }
-        None => DEFAULT_SCRAPE_INTERVAL,
-    };
-    let scrape_static_labels = match dotenv::var("SCRAPE_STATIC_LABELS").ok() {
-        Some(val) if !val.is_empty() => val
-            .split(',')
-            .map(|name_value| {
-                let name_value = name_value.splitn(2, '=').collect::<Vec<_>>();
-                match name_value.as_slice() {
-                    [name, value]
-                        if !value.is_empty()
-                            && !name.is_empty()
-                            && *name == name.to_snake_case() =>
-                    {
-                        Ok((name.to_string(), value.to_string()))
-                    }
-                    _ => Err(anyhow::format_err!("invalid SCRAPE_STATIC_LABELS")),
-                }
-            })
-            .collect::<Result<_, _>>()?,
-        _ => Vec::new(),
-    };
-    let scrape_static_labels: &'static _ = Box::leak(scrape_static_labels.into_boxed_slice());
-    let scrape_concurrency: usize = match dotenv::var("SCRAPE_CONCURRENCY").ok() {
-        Some(val) => val.parse().context("invalid SCRAPE_CONCURRENCY")?,
-        None => 4096,
-    };
+async fn run(config: Config, shutdown: piper::Receiver<()>) -> Result<()> {
+    // Allocate static memory for configuration
+    let config: &'static _ = Box::leak(Box::new(config));
 
     // Connect to storage provider
-    let store: &'static _ = Box::leak(storage::from_env().await?);
+    let store: &'static _ = Box::leak(storage::from_config(config).await?);
 
     // Collect the list of pods to be scraped for metrics
-    let scrape_url = dotenv::var("SCRAPE_TARGET").ok();
-    let pods = if let Some(scrape_url) = &scrape_url {
+    let pods = if let Some(scrape_url) = &config.scrape_target {
         let kube_client =
             kube::Client::new(kube::Config::new("https://localhost".parse().unwrap()));
         let pods = ScrapeList::shared(kube_client);
@@ -147,7 +83,7 @@ async fn run(shutdown: piper::Receiver<()>) -> Result<()> {
     };
 
     // Every debug interval, log debug informationc
-    let debug_interval = match debug_interval_secs {
+    let debug_interval = match config.debug_interval {
         Some(duration) => Some(async_std::task::spawn(async move {
             let mut interval = async_std::stream::interval(duration);
             while let Some(_) = interval.next().await {
@@ -158,7 +94,7 @@ async fn run(shutdown: piper::Receiver<()>) -> Result<()> {
     };
 
     // Every WATCH_INTERVAL, update our list of pods
-    let watch_interval = if scrape_url.is_none() {
+    let watch_interval = if config.scrape_target.is_none() {
         let pods = pods.clone();
         Some(async_std::task::spawn(async move {
             /* Watch pods using Kubenertes informer */
@@ -170,7 +106,7 @@ async fn run(shutdown: piper::Receiver<()>) -> Result<()> {
                         debug_error(err.into());
 
                         // On failure, wait WATCH_INTERVAL seconds before retrying
-                        async_std::task::sleep(watch_interval_secs).await;
+                        async_std::task::sleep(config.watch_interval).await;
                     }
                 }
             }
@@ -216,14 +152,14 @@ async fn run(shutdown: piper::Receiver<()>) -> Result<()> {
             // Scrape the targets with a given `max_concurrency`
             targets
                 .into_par_stream()
-                .limit(scrape_concurrency)
+                .limit(config.scrape_concurrency as usize)
                 .for_each(move |target| {
-                    scrape_target(store, scrape_static_labels, Arc::clone(&target))
+                    scrape_target(store, &config.scrape_labels, Arc::clone(&target))
                 })
                 .await;
 
             // Sleep until the next scrape interval
-            if let Some(delay) = scrape_interval_secs.checked_sub(start.elapsed()) {
+            if let Some(delay) = config.scrape_interval.checked_sub(start.elapsed()) {
                 async_std::task::sleep(delay).await;
             }
         }
@@ -259,7 +195,7 @@ async fn scrape_target(
         target.bookmark(timestamp),
         timestamp - (5 * 60), // at most ~5 minute old timestamps
     );
-    match target.scrape(SCRAPE_TIMEOUT).await {
+    match target.scrape(std::time::Duration::from_secs(1)).await {
         Ok(input) => {
             DEBUG.scrape_succeeded();
 

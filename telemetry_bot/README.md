@@ -53,7 +53,7 @@ SCRAPE_TARGET
     Specifies a single specific url which should be scraped.
     If set, telemetry bot will not attempt to discover scrape targets from kubernetes.
 
-SCRAPE_STATIC_LABELS
+SCRAPE_LABELS
 
     A comma separated list of static labels to add to every scraped metric.
 
@@ -97,14 +97,14 @@ WATCH_INTERVAL
 These options configure how telemetry is logged, published, and/or exposed.
 
 ```
+DEBUG
+
+    Enables verbose logging of errors that occur while scraping metrics.
+    (default: false, off, 0)
+
 DEBUG_INTERVAL
 
-    How frequently (in seconds) to log debug interval (can also be: false, off, 0, '').
+    How frequently (in seconds) to log internal debug metrics (can also be: false, off, 0, '').
     (default: 300 seconds)
-
-ERROR_LOGGER
-
-    Enables (very verbose) logging of errors that occur while scraping metrics.
-    (default: false, off, 0)
 
 ```

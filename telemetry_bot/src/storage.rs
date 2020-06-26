@@ -13,26 +13,25 @@ use {
     telemetry_schema::SeriesSchema,
 };
 
+use crate::config::Config;
+
 /// Configures the storage backend from environment variables.
-pub async fn from_env() -> Result<Box<dyn Storage>> {
-    match dotenv::var("STORAGE_TYPE")
-        .context("missing STORAGE_TYPE")?
-        .as_str()
-    {
-        "remote" => {
-            if cfg!(feature = "storage-remote-write") {
-                let storage = RemoteWriteStorage::from_env()?;
-                Ok(Box::new(storage))
-            } else {
-                Err(anyhow::format_err!("can't use storage type 'remote': must compiled wit 'feature = storage-remote-write"))
-            }
-        }
+pub async fn from_config(config: &Config) -> Result<Box<dyn Storage>> {
+    match config.storage_type.as_str() {
         "standalone" => {
             if cfg!(feature = "storage-timescale-standalone") {
-                let storage = StandaloneStorage::from_env().await?;
+                let storage = StandaloneStorage::from_config(config).await?;
                 Ok(Box::new(storage))
             } else {
                 Err(anyhow::format_err!("can't use storage type 'standalone': must compiled wit 'feature = storage-timescale-standalone'"))
+            }
+        }
+        "remote" => {
+            if cfg!(feature = "storage-remote-write") {
+                let storage = RemoteWriteStorage::from_config(config)?;
+                Ok(Box::new(storage))
+            } else {
+                Err(anyhow::format_err!("can't use storage type 'remote': must compiled wit 'feature = storage-remote-write"))
             }
         }
         type_ => Err(anyhow::format_err!("unsupported STORAGE_TYPE: {}", type_)),
@@ -59,8 +58,11 @@ pub struct RemoteWriteStorage {
 
 #[cfg(feature = "storage-remote-write")]
 impl RemoteWriteStorage {
-    pub fn from_env() -> Result<RemoteWriteStorage> {
-        let write_url = dotenv::var("REMOTE_WRITE_URL").context("missing REMOTE_WRITE_URL")?;
+    pub fn from_config(config: &Config) -> Result<RemoteWriteStorage> {
+        let write_url = config
+            .remote_write_url
+            .clone()
+            .ok_or_else(|| anyhow::format_err!("missing REMOTE_WRITE_URL"))?;
         Ok(RemoteWriteStorage { write_url })
     }
 }
@@ -99,16 +101,16 @@ pub struct StandaloneStorage {
 
 #[cfg(feature = "storage-timescale-standalone")]
 impl StandaloneStorage {
-    pub async fn from_env() -> Result<StandaloneStorage> {
+    pub async fn from_config(config: &Config) -> Result<StandaloneStorage> {
         // Open a sqlx connection pool
-        let db_url = dotenv::var("DATABASE_URL").context("missing DATABASE_URL")?;
-        let db_pool_size = match dotenv::var("DATABASE_POOL_SIZE").ok() {
-            Some(val) => val.parse().context("invalid DATABASE_POOL_SIZE")?,
-            None => 8,
-        };
+        let db_url = config
+            .database_url
+            .clone()
+            .ok_or_else(|| anyhow::format_err!("missing DATABASE_URL"))?;
+        let db_pool_size = config.database_pool_size;
         println!("Connecting to database...");
         let db = sqlx::postgres::PgPool::builder()
-            .max_size(db_pool_size)
+            .max_size(db_pool_size as u32)
             .build(&db_url)
             .await
             .context("connecting to timescaledb")?;
@@ -116,12 +118,12 @@ impl StandaloneStorage {
 
         // Load known metrics from the database
         println!("Loading metrics metadata...");
-        let metrics: Vec<(String, String, String, Vec<String>)> = sqlx::query_as(
-            "SELECT name, table_name, series_type, label_columns FROM telemetry_catalog.tables",
-        )
-        .fetch_all(&db)
-        .await
-        .context("loading pre-existing metrics")?;
+        let stmt =
+            "SELECT name, table_name, series_type, label_columns FROM telemetry_catalog.tables";
+        let metrics: Vec<(String, String, String, Vec<String>)> = sqlx::query_as(stmt)
+            .fetch_all(&db)
+            .await
+            .context("loading pre-existing metrics")?;
         let mut tables: HashMap<String, &'static SeriesSchema> =
             HashMap::with_capacity(metrics.len());
         for (metric, table, type_, labels) in metrics {
