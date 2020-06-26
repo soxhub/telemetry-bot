@@ -110,18 +110,6 @@ async fn run(config: Config, shutdown: piper::Receiver<()>) -> Result<()> {
                     }
                 }
             }
-
-            // /* Watch pods by polling the Kubernetes `list` api */
-            // let mut interval = async_std::stream::interval(watch_interval_secs);
-            // while let Some(_) = interval.next().await {
-            //     match pods.refresh().await {
-            //         Ok(()) => DEBUG.update_pods(pods.len()),
-            //         Err(err) => {
-            //             DEBUG.polling_failed();
-            //             debug_error(err);
-            //         }
-            //     }
-            // }
         }))
     } else {
         None

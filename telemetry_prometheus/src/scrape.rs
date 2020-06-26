@@ -185,7 +185,9 @@ impl ScrapeList {
 
     pub async fn refresh(&self) -> Result<()> {
         // Get list of pods from prometheus
-        let options = kube::api::ListParams::default().timeout(15);
+        let options = kube::api::ListParams::default()
+            .fields("status.phase=Running")
+            .timeout(15);
         let pods = self.api.list(&options).await?;
 
         // Collect pods scrape configuration
@@ -211,7 +213,9 @@ impl ScrapeList {
         }
 
         // Watch for changes to the set of pods
-        let options = kube::api::ListParams::default().timeout(15);
+        let options = kube::api::ListParams::default()
+            .fields("status.phase=Running")
+            .timeout(15);
         let informer = kube::runtime::Informer::new(self.api.clone()).params(options);
 
         // Poll events forever

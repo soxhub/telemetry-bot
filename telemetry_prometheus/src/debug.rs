@@ -91,7 +91,7 @@ impl DebugMetrics {
         let scrape_count = self.scrape_count.swap(0, Ordering::Relaxed);
         let scrape_errors = self.scrape_errors.swap(0, Ordering::Relaxed);
         let scrape_timeouts = self.scrape_timeouts.swap(0, Ordering::Relaxed);
-        let scrape_disconnects = self.scrape_timeouts.swap(0, Ordering::Relaxed);
+        let scrape_disconnects = self.scrape_disconnects.swap(0, Ordering::Relaxed);
         let write_count = self.write_count.swap(0, Ordering::Relaxed);
         let write_errors = self.write_errors.swap(0, Ordering::Relaxed);
         let write_skips = self.write_skips.swap(0, Ordering::Relaxed);
