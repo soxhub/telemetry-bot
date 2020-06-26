@@ -19,20 +19,34 @@ use crate::config::Config;
 pub async fn from_config(config: &Config) -> Result<Box<dyn Storage>> {
     match config.storage_type.as_str() {
         "standalone" => {
-            if cfg!(feature = "storage-timescale-standalone") {
+            #[cfg(feature = "storage-timescale-standalone")]
+            {
                 let storage = StandaloneStorage::from_config(config).await?;
                 Ok(Box::new(storage))
-            } else {
-                Err(anyhow::format_err!("can't use storage type 'standalone': must compiled wit 'feature = storage-timescale-standalone'"))
             }
+
+            #[cfg(not(feature = "storage-timescale-standalone"))]
+            Err(anyhow::format_err!("can't use storage type 'standalone': must compiled wit 'feature = storage-timescale-standalone'"))
+        }
+        "compat" => {
+            #[cfg(feature = "storage-timescale-prometheus")]
+            {
+                let storage = PrometheusConnectorStorage::from_config(config).await?;
+                Ok(Box::new(storage))
+            }
+
+            #[cfg(not(feature = "storage-timescale-prometheus"))]
+            Err(anyhow::format_err!("can't use storage type 'connector': must compiled wit 'feature = storage-timescale-prometheus'"))
         }
         "remote" => {
-            if cfg!(feature = "storage-remote-write") {
+            #[cfg(feature = "storage-remote-write")]
+            {
                 let storage = RemoteWriteStorage::from_config(config)?;
                 Ok(Box::new(storage))
-            } else {
-                Err(anyhow::format_err!("can't use storage type 'remote': must compiled wit 'feature = storage-remote-write"))
             }
+
+            #[cfg(not(feature = "storage-remote-write"))]
+            Err(anyhow::format_err!("can't use storage type 'remote': must compiled wit 'feature = storage-remote-write"))
         }
         type_ => Err(anyhow::format_err!("unsupported STORAGE_TYPE: {}", type_)),
     }
@@ -113,7 +127,7 @@ impl StandaloneStorage {
             .max_size(db_pool_size as u32)
             .build(&db_url)
             .await
-            .context("connecting to timescaledb")?;
+            .context("error connecting to timescaledb")?;
         println!("Connected to {}", db_url);
 
         // Load known metrics from the database
@@ -123,7 +137,7 @@ impl StandaloneStorage {
         let metrics: Vec<(String, String, String, Vec<String>)> = sqlx::query_as(stmt)
             .fetch_all(&db)
             .await
-            .context("loading pre-existing metrics")?;
+            .context("error loading pre-existing metrics")?;
         let mut tables: HashMap<String, &'static SeriesSchema> =
             HashMap::with_capacity(metrics.len());
         for (metric, table, type_, labels) in metrics {
@@ -253,5 +267,54 @@ impl Storage for StandaloneStorage {
             }
         }
         (sent, errors)
+    }
+}
+
+#[cfg(feature = "storage-timescale-prometheus")]
+pub struct PrometheusConnectorStorage {
+    connector: &'static telemetry_connector::Connector,
+}
+
+#[cfg(feature = "storage-timescale-prometheus")]
+impl PrometheusConnectorStorage {
+    pub async fn from_config(config: &Config) -> Result<PrometheusConnectorStorage> {
+        // Open a sqlx connection pool
+        let db_url = config
+            .database_url
+            .clone()
+            .ok_or_else(|| anyhow::format_err!("missing DATABASE_URL"))?;
+        let db_pool_size = config.database_pool_size;
+        println!("Connecting to database...");
+        let db = sqlx::postgres::PgPool::builder()
+            .max_size(db_pool_size as u32)
+            .build(&db_url)
+            .await
+            .context("error connecting to timescaledb")?;
+        println!("Connected to {}", db_url);
+
+        // Build storage
+        let connector = telemetry_connector::Connector::new(db);
+        connector
+            .resume()
+            .await
+            .context("error resuming connector")?;
+        let connector: &'static _ = Box::leak(Box::new(connector));
+        Ok(PrometheusConnectorStorage { connector })
+    }
+}
+
+#[async_trait]
+#[cfg(feature = "storage-timescale-prometheus")]
+impl Storage for PrometheusConnectorStorage {
+    async fn write(
+        &self,
+        default_timestamp: i64,
+        _metric_types: MetricTypes<'_>,
+        sample_batch: Vec<Sample<'_>>,
+        static_labels: &[(String, String)],
+    ) -> (usize, Vec<Error>) {
+        self.connector
+            .write_samples(default_timestamp, sample_batch, static_labels)
+            .await
     }
 }
