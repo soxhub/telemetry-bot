@@ -121,10 +121,13 @@ impl StandaloneStorage {
             .database_url
             .clone()
             .ok_or_else(|| anyhow::format_err!("missing DATABASE_URL"))?;
-        let db_pool_size = config.database_pool_size;
+        let db_min_conn = num_cpus::get().max(1);
+        let db_max_conn = config.database_conn_per_cpu as usize * db_min_conn;
+
         println!("Connecting to database...");
         let db = sqlx::postgres::PgPool::builder()
-            .max_size(db_pool_size as u32)
+            .min_size(db_min_conn as u32)
+            .max_size(db_max_conn as u32)
             .build(&db_url)
             .await
             .context("error connecting to timescaledb")?;
@@ -283,10 +286,13 @@ impl PrometheusConnectorStorage {
             .database_url
             .clone()
             .ok_or_else(|| anyhow::format_err!("missing DATABASE_URL"))?;
-        let db_pool_size = config.database_pool_size;
+        let db_min_conn = num_cpus::get().max(1);
+        let db_max_conn = config.database_conn_per_cpu as usize * db_min_conn;
+
         println!("Connecting to database...");
         let db = sqlx::postgres::PgPool::builder()
-            .max_size(db_pool_size as u32)
+            .min_size(db_min_conn as u32)
+            .max_size(db_max_conn as u32)
             .build(&db_url)
             .await
             .context("error connecting to timescaledb")?;

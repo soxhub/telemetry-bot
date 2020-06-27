@@ -55,11 +55,11 @@ impl ScrapeTarget {
 }
 
 impl ScrapeTarget {
-    fn from_pod(pod: k8s::Pod) -> Option<Self> {
+    fn from_pod(pod: k8s::Pod, filter_keys: &[&'static str]) -> Option<Self> {
         // Check if scraping is enabled for this pod
         let metadata = pod.metadata?;
         let annotations = metadata.annotations.unwrap_or_default();
-        if !annotations.contains_key("telemetry.bot/scrape") {
+        if !filter_keys.iter().any(|key| annotations.contains_key(*key)) {
             return None;
         }
 
@@ -70,10 +70,12 @@ impl ScrapeTarget {
         let host = pod.status?.pod_ip?;
         let port = annotations
             .get("telemetry.bot/port")
+            .or_else(|| annotations.get("prometheus.io/port"))
             .and_then(|v| v.parse::<u16>().ok())
             .unwrap_or(80);
         let path = annotations
             .get("telemetry.bot/path")
+            .or_else(|| annotations.get("prometheus.io/path"))
             .map(|path| path.trim_start_matches('/'))
             .unwrap_or("metrics");
         let url = format!("http://{}:{}/{}", host, port, path);
@@ -126,6 +128,9 @@ impl ScrapeTarget {
 pub struct ScrapeList {
     api: kube::Api<k8s::Pod>,
 
+    /// Which annotations to filter on
+    annotations: Vec<&'static str>,
+
     /// A map of pod names to scrape targets; for bookkeeping.
     ///
     /// Only intended to be accessed by a single thread.
@@ -137,11 +142,16 @@ pub struct ScrapeList {
 }
 
 impl ScrapeList {
-    pub fn shared(client: kube::Client) -> Arc<Self> {
+    pub fn shared(client: kube::Client, annotations: Vec<&'static str>) -> Arc<Self> {
         let api = kube::Api::all(client);
         let map = Mutex::new(IndexMap::new());
         let list = ArcSwap::new(Arc::new(Vec::new()));
-        Arc::new(Self { api, map, list })
+        Arc::new(Self {
+            api,
+            annotations,
+            map,
+            list,
+        })
     }
 
     pub fn is_empty(&self) -> bool {
@@ -193,7 +203,7 @@ impl ScrapeList {
         // Collect pods scrape configuration
         let mut targets = Vec::new();
         for pod in pods {
-            if let Some(target) = ScrapeTarget::from_pod(pod) {
+            if let Some(target) = ScrapeTarget::from_pod(pod, &self.annotations) {
                 targets.push(target);
             }
         }
@@ -265,7 +275,7 @@ impl ScrapeList {
                             pod.metadata.as_ref().and_then(|meta| meta.name.clone())
                         {
                             // If the pod is a scrape target add it to the scrape target list
-                            if let Some(target) = ScrapeTarget::from_pod(pod) {
+                            if let Some(target) = ScrapeTarget::from_pod(pod, &self.annotations) {
                                 let target = Arc::new(target);
                                 let mut map = self.map.lock();
                                 match map.get(&target_name) {

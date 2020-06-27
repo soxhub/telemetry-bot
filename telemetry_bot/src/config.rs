@@ -16,6 +16,12 @@ pub struct Config {
     /// the Kubernetes api when querying the list of pods to scrape.
     pub watch_interval: Duration,
 
+    /// Whether to scrape pods with `prometheus.io/scrape` annotations
+    pub watch_prometheus_io: bool,
+
+    /// Whether to scrape pods with `telemetry.bot/scrape` annotations
+    pub watch_telemetry_bot: bool,
+
     /// How frequently (in seconds) to collect timeseries data from "/metrics" endpoints.
     pub scrape_interval: Duration,
 
@@ -39,7 +45,7 @@ pub struct Config {
     pub database_url: Option<String>,
 
     /// The maximum number of database connections to allow at once to TimescaleDB.
-    pub database_pool_size: u16,
+    pub database_conn_per_cpu: u8,
 
     /// When STORAGE_TYPE is "remote", this option is required.
     /// The url to send prometheus remote write requests too; it should include the path.
@@ -57,6 +63,15 @@ impl Config {
         let env = Environment::from_args();
 
         // Perform custom handling for some environment variables
+        let mut watch_prometheus_io = false;
+        let mut watch_telemetry_bot = false;
+        for key in env.watch_annotations.split(',') {
+            match key.trim() {
+                "prometheus.io" => watch_prometheus_io = true,
+                "telemetry.bot" => watch_telemetry_bot = true,
+                _ => return Err(anyhow::format_err!("invalid WATCH_ANNOTATIONS")),
+            }
+        }
         Ok(Config {
             debug: env.debug
                 || match dotenv::var("DEBUG").ok() {
@@ -71,35 +86,35 @@ impl Config {
                 ToggleValue::Disabled => None,
             },
             watch_interval: Duration::from_secs(env.watch_interval),
+            watch_prometheus_io,
+            watch_telemetry_bot,
             scrape_interval: Duration::from_secs(env.scrape_interval),
             scrape_concurrency: if env.scrape_concurrency == 0 {
-                4098
+                4096
             } else {
                 env.scrape_concurrency
             },
-            scrape_labels: match env.scrape_labels {
-                Some(val) if !val.is_empty() => val
-                    .split(',')
-                    .map(|name_value| {
-                        let name_value = name_value.splitn(2, '=').collect::<Vec<_>>();
-                        match name_value.as_slice() {
-                            [name, value]
-                                if !value.is_empty()
-                                    && !name.is_empty()
-                                    && *name == name.to_snake_case() =>
-                            {
-                                Ok((name.to_string(), value.to_string()))
-                            }
-                            _ => Err(anyhow::format_err!("invalid SCRAPE_LABELS")),
+            scrape_labels: env
+                .scrape_labels
+                .split(',')
+                .map(|name_value| {
+                    let name_value = name_value.splitn(2, '=').collect::<Vec<_>>();
+                    match name_value.as_slice() {
+                        [name, value]
+                            if !value.is_empty()
+                                && !name.is_empty()
+                                && *name == name.to_snake_case() =>
+                        {
+                            Ok((name.to_string(), value.to_string()))
                         }
-                    })
-                    .collect::<Result<_, _>>()?,
-                _ => Vec::new(),
-            },
+                        _ => Err(anyhow::format_err!("invalid SCRAPE_LABELS")),
+                    }
+                })
+                .collect::<Result<_, _>>()?,
             scrape_target: env.scrape_target,
             storage_type: env.storage_type,
             database_url: env.database_url,
-            database_pool_size: env.database_pool_size,
+            database_conn_per_cpu: 5,
             remote_write_url: env.remote_write_url,
         })
     }
@@ -120,6 +135,14 @@ struct Environment {
     #[structopt(long, env = "WATCH_INTERVAL", default_value = "30")]
     watch_interval: u64,
 
+    /// Specifies which pod annotations to filter on
+    #[structopt(
+        long,
+        env = "WATCH_ANNOTATIONS",
+        default_value = "prometheus.io,telemetry.bot"
+    )]
+    watch_annotations: String,
+
     /// How frequently (in seconds) to scrape from "/metrics" endpoints
     #[structopt(long, env = "SCRAPE_INTERVAL", default_value = "15")]
     scrape_interval: u64,
@@ -129,8 +152,8 @@ struct Environment {
     scrape_concurrency: u16,
 
     /// A comma separated list of static labels to add to metrics
-    #[structopt(long, env = "SCRAPE_LABELS")]
-    scrape_labels: Option<String>,
+    #[structopt(long, env = "SCRAPE_LABELS", default_value = "")]
+    scrape_labels: String,
 
     /// Specifies a single specific url which should be scraped
     #[structopt(short = "t", long, env = "SCRAPE_TARGET")]
@@ -141,14 +164,13 @@ struct Environment {
     storage_type: String,
 
     /// The url to connect to timescaledb (if storage is "standalone" or "compat")
-    #[structopt(env = "DATABASE_URL")]
+    #[structopt(long = "db-url", env = "DATABASE_URL")]
     //, required_if("storage", "standalone"), required_if("storage", "compat")
     database_url: Option<String>,
 
-    /// The maximum number of database connections to allow at once
-    #[structopt(env = "DATABASE_POOL_SIZE", default_value = "8")]
-    database_pool_size: u16,
-
+    // /// The number of database connections to open per processor
+    // #[structopt(env = "DATABASE_POOL_SIZE", default_value = "5")]
+    // database_conn_ratio: u16,
     /// The url to send prometheus remote write requests too
     #[structopt(long, env = "REMOTE_WRITE_URL")] //, required_if("storage", "remote")
     remote_write_url: Option<String>,

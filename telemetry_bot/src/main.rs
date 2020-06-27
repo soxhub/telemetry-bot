@@ -65,16 +65,23 @@ async fn run(config: Config, shutdown: piper::Receiver<()>) -> Result<()> {
     let pods = if let Some(scrape_url) = &config.scrape_target {
         let kube_client =
             kube::Client::new(kube::Config::new("https://localhost".parse().unwrap()));
-        let pods = ScrapeList::shared(kube_client);
+        let pods = ScrapeList::shared(kube_client, Vec::new());
         pods.update(vec![ScrapeTarget::new("default".into(), scrape_url.into())]);
         println!("Target: {}", scrape_url);
         pods
     } else {
         println!("Loading scrape targets...");
+        let mut annotations = Vec::new();
+        if config.watch_prometheus_io {
+            annotations.push("prometheus.io/scrape")
+        }
+        if config.watch_telemetry_bot {
+            annotations.push("telemetry.bot/scrape")
+        }
         let kube_client = kube::Client::try_default()
             .await
             .context("reading kubernetes api config")?;
-        let pods = ScrapeList::shared(kube_client);
+        let pods = ScrapeList::shared(kube_client, annotations);
         pods.refresh()
             .await
             .context("error listing prometheus pods")?;
