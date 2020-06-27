@@ -37,7 +37,7 @@ How do I do `X` in this rust project?
     psql -U postgres -d telemetry -c 'CREATE EXTENSION timescaledb'
 
     # Run migrations
-    cargo run -p telemetry-schema telemetry-migrate
+    cargo run -p telemetry-standalone telemetry-migrate
     ```
 
 ### Workflow
@@ -58,7 +58,7 @@ To reset the database:
 dropdb telemetry -U postgres \
     && createdb telemetry --owner=postgres -U postgres \
     && psql -U postgres -d telemetry -c 'CREATE EXTENSION timescaledb' \
-    && cargo run -p telemetry-schema telemetry-migrate
+    && cargo run -p telemetry-standalone telemetry-migrate
 ```
 
 ## Contributing (GitHub)

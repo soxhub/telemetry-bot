@@ -10,7 +10,7 @@ use {
     parking_lot::RwLock, sqlx::prelude::*,
     std::collections::HashMap,
     telemetry_prometheus::SeriesType,
-    telemetry_schema::SeriesSchema,
+    telemetry_standalone::SeriesSchema,
 };
 
 use crate::config::Config;

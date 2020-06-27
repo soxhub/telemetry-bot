@@ -4,5 +4,5 @@ members = [
     "telemetry_connector",
     "telemetry_prometheus",
     "telemetry_remote_write",
-    "telemetry_schema",
+    "telemetry_standalone",
 ]

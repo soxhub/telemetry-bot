@@ -2387,7 +2387,7 @@ dependencies = [
  "telemetry-connector",
  "telemetry-prometheus",
  "telemetry-remote-write",
- "telemetry-schema",
+ "telemetry-standalone",
 ]
 
 [[package]]
@@ -2434,7 +2434,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "telemetry-schema"
+name = "telemetry-standalone"
 version = "0.1.0"
 dependencies = [
  "anyhow",

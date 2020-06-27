@@ -13,7 +13,7 @@ default = [
 ]
 storage-remote-write = ["telemetry-remote-write"]
 storage-timescale-prometheus = ["telemetry-connector"]
-storage-timescale-standalone = ["telemetry-schema"]
+storage-timescale-standalone = ["telemetry-standalone"]
 
 [dependencies]
 anyhow = "1.0.31"
@@ -38,7 +38,7 @@ telemetry-prometheus = { path = "../telemetry_prometheus" }
 # Storage dependencies
 telemetry-connector = { path = "../telemetry_connector", optional = true }
 telemetry-remote-write = { path = "../telemetry_remote_write", optional = true }
-telemetry-schema = { path = "../telemetry_schema", optional = true }
+telemetry-standalone = { path = "../telemetry_standalone", optional = true }
 
 # Enable compatibiltiy with `tokio`-based dependencies (the `kube` crate)
 smol = { version = "0.1.11", features = ["tokio02"] }
