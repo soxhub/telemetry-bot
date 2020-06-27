@@ -65,6 +65,8 @@ impl Connector {
     ) -> (usize, Vec<Error>) {
         let mut errors = Vec::new();
 
+        // TODO: Maybe create a channel+task per metric to perform batch inserts,
+        //       instead of inserting only a couple values at a time as is more likely here.
         let mut batches: HashMap<Arc<String>, (Vec<DateTime<Utc>>, Vec<f64>, Vec<i64>)> =
             HashMap::with_capacity(scraped_samples.len());
         for sample in scraped_samples {
@@ -193,17 +195,25 @@ impl Connector {
     ) -> Result<i64> {
         let labels = label_pairs.iter().map(|(a, _)| *a).collect::<Vec<_>>();
         let values = label_pairs.iter().map(|(_, b)| *b).collect::<Vec<_>>();
-
-        // TODO: Figure out why `timescale_prometheus` thinks this transaction is necessary
-        let mut tx = self.db.begin().await?;
         let (_table_name, series_id): (String, i64) =
             sqlx::query_as(schema::UPSERT_SERIES_ID_FOR_LABELS)
                 .bind(metric)
                 .bind(&labels)
                 .bind(&values)
-                .fetch_one(&mut tx)
+                .fetch_one(&self.db)
                 .await?;
-        tx.commit().await?;
+
+        // // NOTE: Unlike `prometheus_connector` we are not performing multiple upserts
+        // //       in a batch, so it isn't necessary to segregate them into separate transactions.
+        // let mut tx = self.db.begin().await?;
+        // let (_table_name, series_id): (String, i64) =
+        //     sqlx::query_as(schema::UPSERT_SERIES_ID_FOR_LABELS)
+        //         .bind(metric)
+        //         .bind(&labels)
+        //         .bind(&values)
+        //         .fetch_one(&mut tx)
+        //         .await?;
+        // tx.commit().await?;
 
         // Cache the id for the series
         self.series.insert(series_key, series_id);
