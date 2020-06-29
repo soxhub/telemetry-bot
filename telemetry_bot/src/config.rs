@@ -57,7 +57,7 @@ impl Config {
     /// Loads configuration from arguments, env and dotenv
     pub fn load() -> Result<Config> {
         // Attempts to find a `.env` file to initialize/extend the environment
-        dotenv::dotenv().context("error loading configuration")?;
+        dotenv::dotenv().ok();
 
         // Load the config from arguments, then environment variables
         let env = Environment::from_args();
