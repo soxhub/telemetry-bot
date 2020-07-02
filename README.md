@@ -1,6 +1,6 @@
 # Telemetry Bot
 A telemetry exporter that scrapes Prometheus `/metrics` endpoints
-and Jaeger api and exports timeseries to TimescaleDB.
+and exports timeseries to TimescaleDB.
 
 ![Fact Core](doc/bot.png)
 
