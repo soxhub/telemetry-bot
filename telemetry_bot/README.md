@@ -12,7 +12,7 @@ Here is an example configuration:
 ```sh
 STORAGE_TYPE=remote
 REMOTE_WRITE_URL="http://timescale-prometheus-connector:9201/write"
-SCRAPE_STATIC_LABELS="environment=production"
+SCRAPE_LABELS="environment=production"
 KUBERNETES_SERVICE_HOST="kubernetes.default.svc"
 ```
 
