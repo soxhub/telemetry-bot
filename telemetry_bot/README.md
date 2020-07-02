@@ -22,7 +22,7 @@ These options configure how telemetry bot stores metrics + telemetry data.
 ```
 STORAGE_TYPE
 
-    Either "standalone" or "remote", this option is required.
+    Either "standalone", "compat" or "remote"; this option is required.
 
 REMOTE_WRITE_URL
 
@@ -33,14 +33,10 @@ REMOTE_WRITE_URL
 
 DATABASE_URL
 
-    When STORAGE_TYPE is "standalone", this option is required.
+    When STORAGE_TYPE is "standalone" or "compat", this option is required.
     The url to connect to TimescaleDB.
 
     e.g. "postgres://postgres@localhost/defaultdb"
-
-DATABASE_POOL_SIZE
-
-    The maximum number of database connections to allow at once to TimescaleDB.
 
 ```
 
