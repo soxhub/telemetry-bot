@@ -1,9 +1,10 @@
-use anyhow::{Error, Result};
+use anyhow::{Context, Error, Result};
 use chrono::prelude::*;
 use dashmap::DashMap;
 use lasso::{LargeSpur, Spur, ThreadedRodeo};
 use sqlx::prelude::*;
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::sync::Arc;
 
 use telemetry_prometheus::parser::Sample;
@@ -195,7 +196,7 @@ impl Connector {
     ) -> Result<i32> {
         let labels = label_pairs.iter().map(|(a, _)| *a).collect::<Vec<_>>();
         let values = label_pairs.iter().map(|(_, b)| *b).collect::<Vec<_>>();
-        let (_table_name, series_id): (String, i32) =
+        let (_table_name, series_id): (String, i64) =
             sqlx::query_as(schema::UPSERT_SERIES_ID_FOR_LABELS)
                 .bind(metric)
                 .bind(&labels)
@@ -214,6 +215,12 @@ impl Connector {
         //         .fetch_one(&mut tx)
         //         .await?;
         // tx.commit().await?;
+
+        // While the `prom_data_series.*` tables use an int8,
+        // the `prom_data` table uses an int4.
+        let series_id = series_id
+            .try_into()
+            .context("invalid series id (too large)")?;
 
         // Cache the id for the series
         self.series.insert(series_key, series_id);
