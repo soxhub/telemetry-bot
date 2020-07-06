@@ -203,7 +203,8 @@ impl Connector {
                 .bind(&labels)
                 .bind(&values)
                 .fetch_one(&self.db)
-                .await?;
+                .await
+                .context("error upserting series")?;
 
         // // NOTE: Unlike `prometheus_connector` we are not performing multiple upserts
         // //       in a batch, so it isn't necessary to segregate them into separate transactions.
