@@ -19,7 +19,7 @@ struct LabelValueKey(Spur);
 
 #[repr(transparent)]
 #[derive(Eq, PartialEq, Hash)]
-struct SeriesKey(Vec<(LabelNameKey, LabelValueKey)>);
+struct SeriesKey(Box<[(LabelNameKey, LabelValueKey)]>);
 
 pub struct Connector {
     db: sqlx::postgres::PgPool,
@@ -109,7 +109,7 @@ impl Connector {
                     )
                 })
                 .collect::<Vec<_>>();
-            let series_key = SeriesKey(label_keys);
+            let series_key = SeriesKey(label_keys.into_boxed_slice());
 
             // Find the series id and save the data row to be inserted
             let timestamp = sample.timestamp.unwrap_or(default_timestamp);
