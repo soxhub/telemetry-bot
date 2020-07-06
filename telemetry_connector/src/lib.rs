@@ -113,12 +113,10 @@ impl Connector {
 
             // Find the series id and save the data row to be inserted
             let timestamp = sample.timestamp.unwrap_or(default_timestamp);
+            let timestamp = DateTime::from_utc(NaiveDateTime::from_timestamp(timestamp, 0), Utc);
             if let Some(series_id) = self.series.get(&series_key) {
                 let (times, values, series_ids) = batches.entry(metric_table_name).or_default();
-                times.push(DateTime::from_utc(
-                    NaiveDateTime::from_timestamp(timestamp, 0),
-                    Utc,
-                ));
+                times.push(timestamp);
                 values.push(sample.value.to_f64());
                 series_ids.push(*series_id);
             } else {
@@ -129,10 +127,7 @@ impl Connector {
                     Ok(series_id) => {
                         let (times, values, series_ids) =
                             batches.entry(metric_table_name).or_default();
-                        times.push(DateTime::from_utc(
-                            NaiveDateTime::from_timestamp(timestamp, 0),
-                            Utc,
-                        ));
+                        times.push(timestamp);
                         values.push(sample.value.to_f64());
                         series_ids.push(series_id);
                     }
@@ -150,12 +145,15 @@ impl Connector {
             let insert_result = sqlx::query(&format!(
                 r#"
                     INSERT INTO {schema_name}.{table_name} ("time", "value", "series_id")
-                    SELECT * FROM UNNEST($1::timestamptz[], $2::float8[], $3::int4[])
+                    SELECT * FROM UNNEST('{timestamp_arr_str}'::timestamptz[], $2::float8[], $3::int4[])
                 "#,
                 table_name = table_name,
-                schema_name = schema::DATA_SCHEMA
+                schema_name = schema::DATA_SCHEMA,
+                // TEMPORARY: attempt to insert timestampts using text format
+                timestamp_arr_str = format!("{{ {} }}",
+                    times.iter().map(DateTime::to_rfc3339).collect::<Vec<_>>().join(",")
+                ),
             ))
-            .bind(&times)
             .bind(&values)
             .bind(&series_ids)
             .execute(&self.db)
