@@ -233,7 +233,7 @@ async fn scrape_target(
                 let err = if errors.len() > 1 {
                     errors
                         .swap_remove(0)
-                        .context("first error")
+                        .context("a write failed with an error")
                         .context(format!("write failed with {} errors", errors.len()))
                 } else {
                     errors.swap_remove(0).context("write failed")

@@ -23,7 +23,7 @@ pub struct Connector {
     db: sqlx::postgres::PgPool,
 
     /// A map of label sets to series ids
-    series: DashMap<SeriesKey, i64>,
+    series: DashMap<SeriesKey, i32>,
 
     /// A map of metric name to metric table name
     metrics: DashMap<String, Arc<String>>,
@@ -67,7 +67,7 @@ impl Connector {
 
         // TODO: Maybe create a channel+task per metric to perform batch inserts,
         //       instead of inserting only a couple values at a time as is more likely here.
-        let mut batches: HashMap<Arc<String>, (Vec<DateTime<Utc>>, Vec<f64>, Vec<i64>)> =
+        let mut batches: HashMap<Arc<String>, (Vec<DateTime<Utc>>, Vec<f64>, Vec<i32>)> =
             HashMap::with_capacity(scraped_samples.len());
         for sample in scraped_samples {
             // Get metric table name
@@ -192,10 +192,10 @@ impl Connector {
         metric: &str,
         series_key: SeriesKey,
         label_pairs: &[(&str, &str)],
-    ) -> Result<i64> {
+    ) -> Result<i32> {
         let labels = label_pairs.iter().map(|(a, _)| *a).collect::<Vec<_>>();
         let values = label_pairs.iter().map(|(_, b)| *b).collect::<Vec<_>>();
-        let (_table_name, series_id): (String, i64) =
+        let (_table_name, series_id): (String, i32) =
             sqlx::query_as(schema::UPSERT_SERIES_ID_FOR_LABELS)
                 .bind(metric)
                 .bind(&labels)
@@ -206,7 +206,7 @@ impl Connector {
         // // NOTE: Unlike `prometheus_connector` we are not performing multiple upserts
         // //       in a batch, so it isn't necessary to segregate them into separate transactions.
         // let mut tx = self.db.begin().await?;
-        // let (_table_name, series_id): (String, i64) =
+        // let (_table_name, series_id): (String, i32) =
         //     sqlx::query_as(schema::UPSERT_SERIES_ID_FOR_LABELS)
         //         .bind(metric)
         //         .bind(&labels)
