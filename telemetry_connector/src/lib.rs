@@ -1,7 +1,7 @@
 use anyhow::{Context, Error, Result};
 use chrono::prelude::*;
 use dashmap::DashMap;
-use lasso::{LargeSpur, Spur, ThreadedRodeo};
+use lasso::{Spur, ThreadedRodeo};
 use sqlx::prelude::*;
 use std::collections::HashMap;
 use std::convert::TryInto;
@@ -15,7 +15,7 @@ struct LabelNameKey(Spur);
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash)]
 #[repr(transparent)]
-struct LabelValueKey(LargeSpur);
+struct LabelValueKey(Spur);
 
 #[derive(Eq, PartialEq, Hash)]
 struct SeriesKey(Vec<(LabelNameKey, LabelValueKey)>);
@@ -33,7 +33,7 @@ pub struct Connector {
     label_names: ThreadedRodeo<Spur>,
 
     /// An interned map of label values to integer ids
-    label_values: ThreadedRodeo<LargeSpur>,
+    label_values: ThreadedRodeo<Spur>,
 }
 
 impl Connector {
