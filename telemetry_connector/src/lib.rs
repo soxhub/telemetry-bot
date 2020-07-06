@@ -145,7 +145,7 @@ impl Connector {
             let insert_result = sqlx::query(&format!(
                 r#"
                     INSERT INTO {schema_name}.{table_name} ("time", "value", "series_id")
-                    SELECT * FROM UNNEST('{timestamp_arr_str}'::timestamptz[], $2::float8[], $3::int4[])
+                    SELECT * FROM UNNEST('{timestamp_arr_str}'::timestamptz[], $1::float8[], $2::int4[])
                 "#,
                 table_name = table_name,
                 schema_name = schema::DATA_SCHEMA,
