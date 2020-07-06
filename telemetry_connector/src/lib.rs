@@ -9,14 +9,15 @@ use std::sync::Arc;
 
 use telemetry_prometheus::parser::Sample;
 
-#[derive(Copy, Clone, Eq, PartialEq, Hash)]
 #[repr(transparent)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash)]
 struct LabelNameKey(Spur);
 
-#[derive(Copy, Clone, Eq, PartialEq, Hash)]
 #[repr(transparent)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash)]
 struct LabelValueKey(Spur);
 
+#[repr(transparent)]
 #[derive(Eq, PartialEq, Hash)]
 struct SeriesKey(Vec<(LabelNameKey, LabelValueKey)>);
 
