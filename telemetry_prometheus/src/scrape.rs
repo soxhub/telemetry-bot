@@ -57,6 +57,7 @@ impl ScrapeTarget {
 impl ScrapeTarget {
     fn from_pod(pod: k8s::Pod, filter_keys: &[&'static str]) -> Option<Self> {
         // Check if scraping is enabled for this pod
+        let status = pod.status?;
         let metadata = pod.metadata?;
         let annotations = metadata.annotations.unwrap_or_default();
         if !filter_keys.iter().any(|key| annotations.contains_key(*key)) {
@@ -67,7 +68,7 @@ impl ScrapeTarget {
         let name = metadata.name?;
 
         // Determine the endpoint to scrape
-        let host = pod.status?.pod_ip?;
+        let host = status.pod_ip?;
         let port = annotations
             .get("telemetry.bot/port")
             .or_else(|| annotations.get("prometheus.io/port"))
@@ -92,7 +93,7 @@ impl ScrapeTarget {
         for label in collect {
             match label {
                 "pod" => labels.push(("pod", Some(name.clone()))),
-                "instance" => labels.push(("instance", Some(host.clone()))),
+                "instance" => labels.push(("instance", status.host_ip.clone())),
                 "namespace" => labels.push(("namespace", metadata.namespace.clone())),
                 _ => (),
             }
