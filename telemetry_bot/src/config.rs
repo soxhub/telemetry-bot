@@ -179,7 +179,7 @@ struct Environment {
     storage_type: String,
 
     /// Enable custom extensions for the configured storage backend.
-    #[structopt(long = "ext", env = "REMOTE_WRITE_URL")]
+    #[structopt(long = "ext", env = "STORAGE_EXTENSIONS")]
     storage_extensions: Option<String>,
 
     /// The url to connect to timescaledb (if storage is "standalone" or "compat")
