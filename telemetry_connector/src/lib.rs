@@ -3,11 +3,12 @@ use chrono::prelude::*;
 use dashmap::DashMap;
 use lasso::{Spur, ThreadedRodeo};
 use sqlx::prelude::*;
+use sqlx::Executor;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::sync::Arc;
 
-use telemetry_prometheus::parser::Sample;
+use telemetry_prometheus::parser::SampleSet;
 
 #[repr(transparent)]
 #[derive(Copy, Clone, Eq, PartialEq, Hash)]
@@ -20,6 +21,13 @@ struct LabelValueKey(Spur);
 #[repr(transparent)]
 #[derive(Eq, PartialEq, Hash)]
 struct SeriesKey(Box<[(LabelNameKey, LabelValueKey)]>);
+
+#[derive(Default)]
+struct HistogramRow {
+    count: Option<f64>,
+    sum: Option<f64>,
+    buckets: HashMap<String, f64>,
+}
 
 pub struct Connector {
     db: sqlx::postgres::PgPool,
@@ -35,6 +43,9 @@ pub struct Connector {
 
     /// An interned map of label values to integer ids
     label_values: ThreadedRodeo<Spur>,
+
+    /// Whether to write histograms to the custom `prom_data_histogram` schema
+    use_histogram_schema: bool,
 }
 
 impl Connector {
@@ -45,7 +56,13 @@ impl Connector {
             metrics: DashMap::new(),
             label_names: ThreadedRodeo::new(),
             label_values: ThreadedRodeo::new(),
+            use_histogram_schema: false,
         }
+    }
+
+    pub fn with_ext_histogram_schema(mut self, enabled: bool) -> Self {
+        self.use_histogram_schema = enabled;
+        self
     }
 
     // Call to initialize a connector from the existing database state
@@ -62,86 +79,201 @@ impl Connector {
     pub async fn write_samples(
         &self,
         default_timestamp: i64,
-        scraped_samples: Vec<Sample<'_>>,
+        scraped: SampleSet<'_>,
         static_labels: &[(String, String)],
     ) -> (usize, Vec<Error>) {
         let mut errors = Vec::new();
 
+        let mut histogram_rows: HashMap<(Arc<String>, i32), HistogramRow> = HashMap::new();
+        let mut histogram_metrics = HashMap::new();
+        if self.use_histogram_schema {
+            histogram_metrics.reserve(scraped.histograms.len() * 3);
+            for name in scraped.histograms {
+                histogram_metrics.insert(format!("{}_bucket", name), name);
+                histogram_metrics.insert(format!("{}_count", name), name);
+                histogram_metrics.insert(format!("{}_sum", name), name);
+            }
+        }
+
         // TODO: Maybe create a channel+task per metric to perform batch inserts,
         //       instead of inserting only a couple values at a time as is more likely here.
-        let mut batches: HashMap<Arc<String>, (Vec<DateTime<Utc>>, Vec<f64>, Vec<i32>)> =
-            HashMap::with_capacity(scraped_samples.len());
-        for sample in scraped_samples {
-            // Get metric table name
-            let metric_table_name = if let Some(table_name) = self.metrics.get(sample.name) {
-                Arc::clone(&table_name)
-            } else {
-                match self.upsert_metric(&sample.name).await {
-                    Ok(table_name) => table_name,
-                    Err(err) => {
-                        errors.push(err);
-                        continue;
+        let mut metric_rows: HashMap<Arc<String>, (Vec<DateTime<Utc>>, Vec<f64>, Vec<i32>)> =
+            HashMap::with_capacity(scraped.samples.len());
+        for sample in scraped.samples {
+            // If use_histogram_schema is enabled, then store histogram metrics in a different schema
+            if let Some(histogram_name) = histogram_metrics.get(sample.name) {
+                /* ==================================
+                 * Collect rows for `histogram` table
+                 * ================================== */
+
+                // Upsert the histogram table
+                let metric_table_name = if let Some(table_name) = self.metrics.get(sample.name) {
+                    Arc::clone(&table_name)
+                } else {
+                    match self.upsert_histogram(histogram_name).await {
+                        Ok(table_name) => table_name,
+                        Err(err) => {
+                            errors.push(err);
+                            continue;
+                        }
+                    }
+                };
+
+                // Collect dynamic and static labels
+                let num_labels = 1 + static_labels.len() + sample.labels.len();
+                let mut bucket = None;
+                let mut label_pairs = Vec::with_capacity(num_labels);
+                label_pairs.push(("__name__", *histogram_name));
+                for (name, value) in static_labels {
+                    label_pairs.push((&name, &value));
+                }
+                for (name, value) in &sample.labels {
+                    if *name == "le" {
+                        bucket = Some(value);
+                    } else {
+                        label_pairs.push((&name, &value));
                     }
                 }
-            };
 
-            // Collect dynamic and static labels
-            let num_labels = 1 + static_labels.len() + sample.labels.len();
-            let mut label_pairs = Vec::with_capacity(num_labels);
-            label_pairs.push(("__name__", sample.name));
-            for (name, value) in static_labels {
-                label_pairs.push((&name, &value));
-            }
-            for (name, value) in &sample.labels {
-                label_pairs.push((&name, &value));
-            }
+                // Labels must be sorted by name alphabetically
+                label_pairs.sort_by(|a, b| a.0.cmp(&b.0));
 
-            // Labels must be sorted by name alphabetically
-            label_pairs.sort_by(|a, b| a.0.cmp(&b.0));
+                // Create a comparable + hashable key for the series
+                let label_keys = label_pairs
+                    .iter()
+                    .map(|(name, value)| {
+                        (
+                            LabelNameKey(self.label_names.get_or_intern(name)),
+                            LabelValueKey(self.label_values.get_or_intern(value)),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let series_key = SeriesKey(label_keys.into_boxed_slice());
 
-            // Create a comparable + hashable key for the series
-            let label_keys = label_pairs
-                .iter()
-                .map(|(name, value)| {
-                    (
-                        LabelNameKey(self.label_names.get_or_intern(name)),
-                        LabelValueKey(self.label_values.get_or_intern(value)),
-                    )
-                })
-                .collect::<Vec<_>>();
-            let series_key = SeriesKey(label_keys.into_boxed_slice());
-
-            // Find the series id and save the data row to be inserted
-            let timestamp = sample.timestamp.unwrap_or(default_timestamp);
-            let timestamp = DateTime::from_utc(NaiveDateTime::from_timestamp(timestamp, 0), Utc);
-            if let Some(series_id) = self.series.get(&series_key) {
-                let (times, values, series_ids) = batches.entry(metric_table_name).or_default();
-                times.push(timestamp);
-                values.push(sample.value.to_f64());
-                series_ids.push(*series_id);
-            } else {
-                match self
-                    .upsert_series(&sample.name, series_key, &label_pairs)
-                    .await
-                {
-                    Ok(series_id) => {
-                        let (times, values, series_ids) =
-                            batches.entry(metric_table_name).or_default();
-                        times.push(timestamp);
-                        values.push(sample.value.to_f64());
-                        series_ids.push(series_id);
+                // Find the series id and save the histogram row to be inserted
+                if let Some(series_id) = self.series.get(&series_key) {
+                    let row = histogram_rows
+                        .entry((metric_table_name, *series_id))
+                        .or_default();
+                    if sample.name.ends_with("et") {
+                        // ends_with buck(et)
+                        if let Some(le) = bucket {
+                            row.buckets.insert(le.to_string(), sample.value.to_f64());
+                        }
+                    } else if sample.name.ends_with('m') {
+                        // ends_with su(m)
+                        row.sum = Some(sample.value.to_f64().into());
+                    } else {
+                        // ends_with count
+                        row.count = Some(sample.value.to_f64().into());
                     }
-                    Err(err) => {
-                        errors.push(err);
-                        continue;
+                } else {
+                    match self
+                        .upsert_series(&sample.name, series_key, &label_pairs)
+                        .await
+                    {
+                        Ok(series_id) => {
+                            let row = histogram_rows
+                                .entry((metric_table_name, series_id))
+                                .or_default();
+                            if sample.name.ends_with("et") {
+                                // ends_with buck(et)
+                                if let Some(bucket) = bucket {
+                                    row.buckets
+                                        .insert(bucket.to_string(), sample.value.to_f64().into());
+                                }
+                            } else if sample.name.ends_with('m') {
+                                // ends_with su(m)
+                                row.sum = Some(sample.value.to_f64().into());
+                            } else {
+                                // ends_with count
+                                row.count = Some(sample.value.to_f64().into());
+                            }
+                        }
+                        Err(err) => {
+                            errors.push(err);
+                            continue;
+                        }
+                    }
+                }
+            } else {
+                /* ==================================
+                 * Collect rows for `prom_data` table
+                 * ================================== */
+
+                // Get the normal metric table name
+                let metric_table_name = if let Some(table_name) = self.metrics.get(sample.name) {
+                    Arc::clone(&table_name)
+                } else {
+                    match self.upsert_metric(&sample.name).await {
+                        Ok(table_name) => table_name,
+                        Err(err) => {
+                            errors.push(err);
+                            continue;
+                        }
+                    }
+                };
+
+                // Collect dynamic and static labels
+                let num_labels = 1 + static_labels.len() + sample.labels.len();
+                let mut label_pairs = Vec::with_capacity(num_labels);
+                label_pairs.push(("__name__", sample.name));
+                for (name, value) in static_labels {
+                    label_pairs.push((&name, &value));
+                }
+                for (name, value) in &sample.labels {
+                    label_pairs.push((&name, &value));
+                }
+
+                // Labels must be sorted by name alphabetically
+                label_pairs.sort_by(|a, b| a.0.cmp(&b.0));
+
+                // Create a comparable + hashable key for the series
+                let label_keys = label_pairs
+                    .iter()
+                    .map(|(name, value)| {
+                        (
+                            LabelNameKey(self.label_names.get_or_intern(name)),
+                            LabelValueKey(self.label_values.get_or_intern(value)),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let series_key = SeriesKey(label_keys.into_boxed_slice());
+
+                // Find the series id and save the data row to be inserted
+                let timestamp = sample.timestamp.unwrap_or(default_timestamp);
+                let timestamp =
+                    DateTime::from_utc(NaiveDateTime::from_timestamp(timestamp, 0), Utc);
+                if let Some(series_id) = self.series.get(&series_key) {
+                    let (times, values, series_ids) =
+                        metric_rows.entry(metric_table_name).or_default();
+                    times.push(timestamp);
+                    values.push(sample.value.to_f64());
+                    series_ids.push(*series_id);
+                } else {
+                    match self
+                        .upsert_series(&sample.name, series_key, &label_pairs)
+                        .await
+                    {
+                        Ok(series_id) => {
+                            let (times, values, series_ids) =
+                                metric_rows.entry(metric_table_name).or_default();
+                            times.push(timestamp);
+                            values.push(sample.value.to_f64());
+                            series_ids.push(series_id);
+                        }
+                        Err(err) => {
+                            errors.push(err);
+                            continue;
+                        }
                     }
                 }
             }
         }
 
-        // Insert the data values
+        // Insert the data rows
         let mut inserted = 0;
-        for (table_name, (times, values, series_ids)) in batches {
+        for (table_name, (times, values, series_ids)) in metric_rows {
             let insert_result = sqlx::query(&format!(
                 r#"
                     INSERT INTO {schema_name}.{table_name} ("time", "value", "series_id")
@@ -160,11 +292,120 @@ impl Connector {
             .await;
             match insert_result {
                 Ok(rows) => inserted += rows as usize,
-                Err(err) => errors.push(Error::new(err).context("error inserting data")),
+                Err(err) => errors.push(Error::new(err).context("error inserting data rows")),
+            }
+        }
+
+        // Insert the histogram rows
+        if self.use_histogram_schema {
+            type Batch = (
+                Vec<DateTime<Utc>>,
+                Vec<i32>,
+                Vec<f64>,
+                Vec<f64>,
+                Vec<HashMap<String, f64>>,
+            );
+            let timestamp =
+                DateTime::from_utc(NaiveDateTime::from_timestamp(default_timestamp, 0), Utc);
+            let mut histogram_batches: HashMap<Arc<String>, Batch> = HashMap::new();
+            for ((table_name, series_id), row) in histogram_rows {
+                if let (Some(count), Some(sum)) = (row.count, row.sum) {
+                    let (times, series_ids, counts, sums, buckets) =
+                        histogram_batches.entry(table_name).or_default();
+                    times.push(timestamp);
+                    series_ids.push(series_id);
+                    counts.push(count);
+                    sums.push(sum);
+                    buckets.push(row.buckets);
+                }
+            }
+            for (table_name, (times, series_ids, counts, sums, buckets)) in histogram_batches {
+                let insert_result = sqlx::query(&format!(
+                    r#"
+                        INSERT INTO {schema_name}.{table_name} ("time", "series_id", "count", "sum", "le")
+                        SELECT * FROM UNNEST(
+                            ARRAY[{timestamp_elements}]::timestamptz[],
+                            $1::int4[],
+                            $2::float8[],
+                            $3::float8[],
+                            ARRAY[{jsonb_elements}]::jsonb[]
+                        )
+                    "#,
+                    table_name = table_name,
+                    schema_name = schema::HISTOGRAM_DATA_SCHEMA,
+                    // TEMPORARY: insert timestampts using text format
+                    //            b.c. sqlx has a bug with serializing in binary format
+                    timestamp_elements = times.iter().map(|t| format!("'{}'", t.to_rfc3339())).collect::<Vec<_>>().join(","),
+                    jsonb_elements = buckets.iter().map(|b| format!("'{}'", serde_json::to_string(b).unwrap_or_default())).collect::<Vec<_>>().join(","),
+                ))
+                .bind(&series_ids)
+                .bind(&counts)
+                .bind(&sums)
+                .execute(&self.db)
+                .await;
+                match insert_result {
+                    Ok(rows) => inserted += rows as usize,
+                    Err(err) => {
+                        errors.push(Error::new(err).context("error inserting histogram rows"))
+                    }
+                }
             }
         }
 
         (inserted, errors)
+    }
+
+    async fn upsert_histogram(&self, histogram_name: &str) -> Result<Arc<String>> {
+        let table_name = self.upsert_metric(histogram_name).await?;
+        let mut tx = self
+            .db
+            .begin()
+            .await
+            .context("failed to begin tx in upsert_histogram")?;
+        {
+            let (metric_id,): (i32,) = sqlx::query_as(&format!(
+                "SELECT id FROM {}.metric WHERE metric_name = $1",
+                schema::CATALOG_SCHEMA
+            ))
+            .bind(&histogram_name)
+            .fetch_one(&mut tx)
+            .await
+            .context("error fetching metric id")?;
+            let stmt = format!(
+                r#"
+                    CREATE TABLE IF NOT EXISTS {histogram_data_schema}.{table_name} (
+                        "time" timestamptz NOT NULL,
+                        "series_id" int4 NOT NULL,
+                        "count" float8 NOT NULL,
+                        "sum" float8 NOT NULL,
+                        "le" jsonb NOT NULL
+                    );
+                    CREATE INDEX data_histogram_series_id_time_{metric_id}
+                        ON {histogram_data_schema}.{table_name} (series_id, time) INCLUDE (count, sum)
+                    ;
+                    SELECT create_hypertable('{histogram_data_schema}.{table_name}', 'time',
+                                             chunk_time_interval=>{catalog_schema}.get_default_chunk_interval(),
+                                             create_default_indexes=>false);
+                    ALTER TABLE {histogram_data_schema}.{table_name} SET (
+                        timescaledb.compress,
+                        timescaledb.compress_segmentby = 'series_id',
+                        timescaledb.compress_orderby = 'time'
+                    );
+                    SELECT add_compress_chunks_policy('{histogram_data_schema}.{table_name}', INTERVAL '1 hour');
+                "#,
+                histogram_data_schema = schema::HISTOGRAM_DATA_SCHEMA,
+                catalog_schema = schema::CATALOG_SCHEMA,
+                table_name = table_name,
+                metric_id = metric_id,
+            );
+            tx.execute(stmt.as_str())
+                .await
+                .context("error creating histogram hypertable")?;
+        }
+        tx.commit()
+            .await
+            .context("failed to commit histogram hypertable")?;
+        Ok(table_name)
     }
 
     async fn upsert_metric(&self, metric_name: &str) -> Result<Arc<String>> {
@@ -233,8 +474,9 @@ mod schema {
     use anyhow::Error;
     use telemetry_prometheus::error::debug_error;
 
+    pub const CATALOG_SCHEMA: &str = "_prom_catalog";
     pub const DATA_SCHEMA: &str = "prom_data";
-    // pub const CATALOG_SCHEMA: &str = "_prom_catalog";
+    pub const HISTOGRAM_DATA_SCHEMA: &str = "prom_histogram_data";
 
     pub const UPSERT_METRICS_TABLE_NAME: &str =
         "SELECT table_name, possibly_new FROM _prom_catalog.get_or_create_metric_table_name($1)";

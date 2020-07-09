@@ -206,21 +206,20 @@ async fn scrape_target(
             }
 
             // Write the samples to the backing storage
-            let (metrics, samples) = parser::parse(&input);
-            let total = samples.len();
-            let samples = samples
+            let mut parsed = parser::parse(&input);
+            parsed.samples = parsed
+                .samples
                 .into_iter()
                 .filter(|d| d.timestamp.map(|t| t >= max_age).unwrap_or(true))
                 .collect::<Vec<_>>();
-            if samples.is_empty() {
+            if parsed.samples.is_empty() {
                 return;
             }
 
-            let expected = samples.len();
+            let total = parsed.samples.len();
+            let expected = parsed.samples.len();
             let skipped = total - expected;
-            let (sent, errors) = store
-                .write(timestamp, metrics, samples, &static_labels)
-                .await;
+            let (sent, errors) = store.write(timestamp, parsed, &static_labels).await;
             if sent > 0 {
                 DEBUG.writes_succeeded(sent);
             }

@@ -14,10 +14,19 @@ pub struct Sample<'a> {
 
 pub type MetricTypes<'a> = HashMap<Cow<'a, str>, SeriesType>;
 
+pub struct SampleSet<'a> {
+    pub metrics: MetricTypes<'a>,
+    pub summaries: Vec<&'a str>,
+    pub histograms: Vec<&'a str>,
+    pub samples: Vec<Sample<'a>>,
+}
+
 /// A parser for Prometheus's text exposition format.
-pub fn parse(input: &str) -> (MetricTypes, Vec<Sample>) {
-    let mut values = Vec::new();
+pub fn parse(input: &str) -> SampleSet {
+    let mut samples = Vec::new();
     let mut metrics = HashMap::new();
+    let mut summaries = Vec::new();
+    let mut histograms = Vec::new();
     let mut continue_help = false;
     for line in input.lines() {
         if continue_help {
@@ -45,11 +54,13 @@ pub fn parse(input: &str) -> (MetricTypes, Vec<Sample>) {
                     metrics.insert(name.into(), SeriesType::Gauge);
                 }
                 "summary" => {
+                    summaries.push(name);
                     metrics.insert(name.into(), SeriesType::Counter);
                     metrics.insert(format!("{}_count", name).into(), SeriesType::CounterInteger);
                     metrics.insert(format!("{}_sum", name).into(), SeriesType::Counter);
                 }
                 "histogram" => {
+                    histograms.push(name);
                     metrics.insert(
                         format!("{}_bucket", name).into(),
                         SeriesType::CounterInteger,
@@ -69,10 +80,15 @@ pub fn parse(input: &str) -> (MetricTypes, Vec<Sample>) {
                 Some(value) => value,
                 None => continue,
             };
-            values.push(value);
+            samples.push(value);
         }
     }
-    (metrics, values)
+    SampleSet {
+        metrics,
+        summaries,
+        histograms,
+        samples,
+    }
 }
 
 fn parse_value<'i>(metric_types: &MetricTypes, line: &'i str) -> Option<Sample<'i>> {
@@ -189,7 +205,9 @@ mod test {
 
     #[test]
     fn parses_text_format() {
-        let (_, values) = parse(
+        let SampleSet {
+            samples: values, ..
+        } = parse(
             r#"
 # HELP http_requests_total The total number of HTTP requests.
 # TYPE http_requests_total counter

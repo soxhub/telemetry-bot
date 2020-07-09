@@ -39,6 +39,9 @@ pub struct Config {
     /// Either "standalone" or "remote", this option is required.
     pub storage_type: String,
 
+    /// Enabled extensions for the configured storage backend.
+    pub storage_extensions: Vec<String>,
+
     /// When STORAGE_TYPE is "standalone", this option is required.
     /// The url to connect to TimescaleDB.
     /// e.g. "postgres://postgres@localhost/defaultdb"
@@ -113,10 +116,22 @@ impl Config {
                 .collect::<Result<_, _>>()?,
             scrape_target: env.scrape_target,
             storage_type: env.storage_type,
+            storage_extensions: env
+                .storage_extensions
+                .as_deref()
+                .unwrap_or("")
+                .split(',')
+                .filter(|x| !x.is_empty())
+                .map(|x| x.to_string())
+                .collect::<Vec<_>>(),
             database_url: env.database_url,
             database_conn_per_cpu: 5,
             remote_write_url: env.remote_write_url,
         })
+    }
+
+    pub fn has_storage_extension(&self, ext_name: &str) -> bool {
+        self.storage_extensions.iter().any(|s| s == ext_name)
     }
 }
 
@@ -163,14 +178,15 @@ struct Environment {
     #[structopt(short = "s", long = "storage", env = "STORAGE_TYPE")]
     storage_type: String,
 
+    /// Enable custom extensions for the configured storage backend.
+    #[structopt(long = "ext", env = "REMOTE_WRITE_URL")]
+    storage_extensions: Option<String>,
+
     /// The url to connect to timescaledb (if storage is "standalone" or "compat")
     #[structopt(long = "db-url", env = "DATABASE_URL")]
     //, required_if("storage", "standalone"), required_if("storage", "compat")
     database_url: Option<String>,
 
-    // /// The number of database connections to open per processor
-    // #[structopt(env = "DATABASE_POOL_SIZE", default_value = "5")]
-    // database_conn_ratio: u16,
     /// The url to send prometheus remote write requests too
     #[structopt(long, env = "REMOTE_WRITE_URL")] //, required_if("storage", "remote")
     remote_write_url: Option<String>,

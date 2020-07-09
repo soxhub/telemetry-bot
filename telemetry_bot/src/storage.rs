@@ -1,6 +1,6 @@
 use anyhow::{Context, Error, Result};
 use async_trait::async_trait;
-use telemetry_prometheus::parser::{MetricTypes, Sample};
+use telemetry_prometheus::parser::{MetricTypes, Sample, SampleSet};
 
 #[rustfmt::skip]
 #[cfg(feature = "storage-timescale-standalone")]
@@ -59,8 +59,7 @@ pub trait Storage: Send + Sync {
     async fn write(
         &self,
         default_timestamp: i64,
-        metric_types: MetricTypes<'_>,
-        sample_batch: Vec<Sample<'_>>,
+        sampleset: SampleSet<'_>,
         static_labels: &[(String, String)],
     ) -> (usize, Vec<Error>);
 }
@@ -87,14 +86,13 @@ impl Storage for RemoteWriteStorage {
     async fn write(
         &self,
         default_timestamp: i64,
-        _metrics_types: MetricTypes<'_>,
-        sample_batch: Vec<Sample<'_>>,
+        sampleset: SampleSet<'_>,
         static_labels: &[(String, String)],
     ) -> (usize, Vec<Error>) {
         let result = telemetry_remote_write::write_samples(
             &self.write_url,
             default_timestamp,
-            sample_batch,
+            sampleset.samples,
             static_labels,
         )
         .await;
@@ -247,21 +245,20 @@ impl Storage for StandaloneStorage {
     async fn write(
         &self,
         default_timestamp: i64,
-        metric_types: MetricTypes<'_>,
-        sample_batch: Vec<Sample<'_>>,
+        sampleset: SampleSet<'_>,
         static_labels: &[(String, String)],
     ) -> (usize, Vec<Error>) {
         let mut sent = 0;
         let mut errors = Vec::new();
         let default_timestamp =
             DateTime::from_utc(NaiveDateTime::from_timestamp(default_timestamp, 0), Utc);
-        for sample in sample_batch {
+        for sample in sampleset.samples {
             let time = sample
                 .timestamp
                 .map(|t| DateTime::from_utc(NaiveDateTime::from_timestamp(t, 0), Utc))
                 .unwrap_or(default_timestamp);
             match self
-                .write_sample(time, sample, static_labels, &metric_types)
+                .write_sample(time, sample, static_labels, &sampleset.metrics)
                 .await
             {
                 Ok(false) => (), // skipped
@@ -299,7 +296,8 @@ impl PrometheusConnectorStorage {
         println!("Connected to {}", db_url);
 
         // Build storage
-        let connector = telemetry_connector::Connector::new(db);
+        let connector = telemetry_connector::Connector::new(db)
+            .with_ext_histogram_schema(config.has_storage_extension("histogram_schema"));
         connector
             .resume()
             .await
@@ -315,12 +313,11 @@ impl Storage for PrometheusConnectorStorage {
     async fn write(
         &self,
         default_timestamp: i64,
-        _metric_types: MetricTypes<'_>,
-        sample_batch: Vec<Sample<'_>>,
+        sampleset: SampleSet<'_>,
         static_labels: &[(String, String)],
     ) -> (usize, Vec<Error>) {
         self.connector
-            .write_samples(default_timestamp, sample_batch, static_labels)
+            .write_samples(default_timestamp, sampleset, static_labels)
             .await
     }
 }
