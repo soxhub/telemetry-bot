@@ -69,6 +69,20 @@ impl Connector {
     pub async fn resume(&self) -> Result<()> {
         // TODO: Load existing metrics table names
 
+        // Create extension schema
+        if self.use_histogram_schema {
+            let stmt = format!(
+                "CREATE SCHEMA IF NOT EXISTS {};",
+                schema::HISTOGRAM_DATA_SCHEMA
+            );
+            self.db
+                .acquire()
+                .await?
+                .execute(stmt.as_str())
+                .await
+                .context("error initializing histogram extension")?;
+        }
+
         // On startup, run to recover any potentially incomplete metric
         schema::finalize_metric_creation(&self.db).await;
 
