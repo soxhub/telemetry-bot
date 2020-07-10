@@ -8,8 +8,9 @@ edition = "2018"
 anyhow = "1.0.31"
 async-std = "1.6.2"
 chrono = "0.4.11"
+dashmap = "3.11.4"
 lasso = { version = "0.2.2", features = ["ahasher", "multi-threaded"] }
+serde_json = "1.0.56"
 sqlx = { version = "0.3.5", features = ["chrono", "json", "postgres", "tls"] }
 telemetry-core = { path = "../telemetry_core" }
-dashmap = "3.11.4"
-serde_json = "1.0.56"
+unsigned-varint = "0.4.0"
