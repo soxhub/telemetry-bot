@@ -118,7 +118,7 @@ impl Connector {
                  * ================================== */
 
                 // Upsert the histogram table
-                let metric_table_name = if let Some(table_name) = self.metrics.get(sample.name) {
+                let metric_table_name = if let Some(table_name) = self.metrics.get(histogram_name) {
                     Arc::clone(&table_name)
                 } else {
                     match self.upsert_metric(histogram_name, true).await {
@@ -180,7 +180,7 @@ impl Connector {
                     }
                 } else {
                     match self
-                        .upsert_series(&sample.name, series_key, &label_pairs)
+                        .upsert_series(&histogram_name, series_key, &label_pairs)
                         .await
                     {
                         Ok(series_id) => {
