@@ -71,20 +71,17 @@ impl Connector {
 
         // Create extension schema
         if self.use_histogram_schema {
-            let stmt = format!(
-                "CREATE SCHEMA IF NOT EXISTS {};",
-                schema::HISTOGRAM_DATA_SCHEMA
-            );
             self.db
                 .acquire()
                 .await?
-                .execute(stmt.as_str())
+                .execute(include_str!("../sql/histogram.sql"))
                 .await
                 .context("error initializing histogram extension")?;
         }
 
         // On startup, run to recover any potentially incomplete metric
         schema::finalize_metric_creation(&self.db).await;
+        schema::finalize_histogram_creation(&self.db).await;
 
         Ok(())
     }
@@ -124,7 +121,7 @@ impl Connector {
                 let metric_table_name = if let Some(table_name) = self.metrics.get(sample.name) {
                     Arc::clone(&table_name)
                 } else {
-                    match self.upsert_histogram(histogram_name).await {
+                    match self.upsert_metric(histogram_name, true).await {
                         Ok(table_name) => table_name,
                         Err(err) => {
                             errors.push(err);
@@ -219,7 +216,7 @@ impl Connector {
                 let metric_table_name = if let Some(table_name) = self.metrics.get(sample.name) {
                     Arc::clone(&table_name)
                 } else {
-                    match self.upsert_metric(&sample.name).await {
+                    match self.upsert_metric(&sample.name, false).await {
                         Ok(table_name) => table_name,
                         Err(err) => {
                             errors.push(err);
@@ -369,74 +366,33 @@ impl Connector {
         (inserted, errors)
     }
 
-    async fn upsert_histogram(&self, histogram_name: &str) -> Result<Arc<String>> {
-        let table_name = self.upsert_metric(histogram_name).await?;
-        let mut tx = self
-            .db
-            .begin()
-            .await
-            .context("failed to begin tx in upsert_histogram")?;
-        {
-            let (metric_id,): (i32,) = sqlx::query_as(&format!(
-                "SELECT id FROM {}.metric WHERE metric_name = $1",
-                schema::CATALOG_SCHEMA
-            ))
-            .bind(&histogram_name)
-            .fetch_one(&mut tx)
-            .await
-            .context("error fetching metric id")?;
-            let stmt = format!(
-                r#"
-                    CREATE TABLE IF NOT EXISTS {histogram_data_schema}.{table_name} (
-                        "time" timestamptz NOT NULL,
-                        "series_id" int4 NOT NULL,
-                        "count" float8 NOT NULL,
-                        "sum" float8 NOT NULL,
-                        "le" jsonb NOT NULL
-                    );
-                    CREATE INDEX data_histogram_series_id_time_{metric_id}
-                        ON {histogram_data_schema}.{table_name} (series_id, time) INCLUDE (count, sum)
-                    ;
-                    SELECT create_hypertable('{histogram_data_schema}.{table_name}', 'time',
-                                             chunk_time_interval=>{catalog_schema}.get_default_chunk_interval(),
-                                             create_default_indexes=>false);
-                    ALTER TABLE {histogram_data_schema}.{table_name} SET (
-                        timescaledb.compress,
-                        timescaledb.compress_segmentby = 'series_id',
-                        timescaledb.compress_orderby = 'time'
-                    );
-                    SELECT add_compress_chunks_policy('{histogram_data_schema}.{table_name}', INTERVAL '1 hour');
-                "#,
-                histogram_data_schema = schema::HISTOGRAM_DATA_SCHEMA,
-                catalog_schema = schema::CATALOG_SCHEMA,
-                table_name = table_name,
-                metric_id = metric_id,
-            );
-            tx.execute(stmt.as_str())
-                .await
-                .context("error creating histogram hypertable")?;
-        }
-        tx.commit()
-            .await
-            .context("failed to commit histogram hypertable")?;
-        Ok(table_name)
-    }
-
-    async fn upsert_metric(&self, metric_name: &str) -> Result<Arc<String>> {
-        let (table_name, possibly_new): (String, bool) =
-            sqlx::query_as(schema::UPSERT_METRICS_TABLE_NAME)
+    async fn upsert_metric(&self, metric_name: &str, histogram: bool) -> Result<Arc<String>> {
+        let (table_name, finalize_metric): (String, bool) =
+            sqlx::query_as(schema::UPSERT_METRIC_TABLE_NAME)
                 .bind(metric_name)
                 .fetch_one(&self.db)
                 .await?;
-        let table_name = Arc::new(table_name);
+        let finalize_histogram = histogram && {
+            let (_, finalize_metric): (String, bool) =
+                sqlx::query_as(schema::UPSERT_HISTOGRAM_TABLE_NAME)
+                    .bind(metric_name)
+                    .fetch_one(&self.db)
+                    .await?;
+            finalize_metric
+        };
 
         // Cache the table name for the metric
+        let table_name = Arc::new(table_name);
         self.metrics.insert(metric_name.into(), table_name.clone());
 
         // If we created a metric, finalize the metric creation in separate task
-        if possibly_new {
+        if finalize_metric {
             let db = self.db.clone();
             async_std::task::spawn(async move { schema::finalize_metric_creation(&db).await });
+        }
+        if finalize_histogram {
+            let db = self.db.clone();
+            async_std::task::spawn(async move { schema::finalize_histogram_creation(&db).await });
         }
 
         Ok(table_name)
@@ -488,19 +444,31 @@ mod schema {
     use anyhow::Error;
     use telemetry_prometheus::error::debug_error;
 
-    pub const CATALOG_SCHEMA: &str = "_prom_catalog";
+    // pub const CATALOG_SCHEMA: &str = "_prom_catalog";
     pub const DATA_SCHEMA: &str = "prom_data";
-    pub const HISTOGRAM_DATA_SCHEMA: &str = "prom_histogram_data";
+    pub const HISTOGRAM_DATA_SCHEMA: &str = "prom_data_histogram";
 
-    pub const UPSERT_METRICS_TABLE_NAME: &str =
+    pub const UPSERT_METRIC_TABLE_NAME: &str =
         "SELECT table_name, possibly_new FROM _prom_catalog.get_or_create_metric_table_name($1)";
+    pub const UPSERT_HISTOGRAM_TABLE_NAME: &str =
+        "SELECT table_name, possibly_new FROM _prom_catalog.get_or_create_histogram_table_name($1)";
     pub const UPSERT_SERIES_ID_FOR_LABELS: &str =
         "SELECT * FROM _prom_catalog.get_or_create_series_id_for_kv_array($1, $2, $3)";
     pub const CALL_FINALIZE_METRIC_CREATION: &str = "CALL _prom_catalog.finalize_metric_creation()";
+    pub const CALL_FINALIZE_HISTOGRAM_CREATION: &str =
+        "CALL _prom_catalog.finalize_histogram_creation()";
 
     pub async fn finalize_metric_creation(db: &sqlx::postgres::PgPool) {
         if let Err(err) = sqlx::query(CALL_FINALIZE_METRIC_CREATION).execute(db).await {
             debug_error(Error::new(err).context("error finalizing metric"));
+        }
+    }
+    pub async fn finalize_histogram_creation(db: &sqlx::postgres::PgPool) {
+        if let Err(err) = sqlx::query(CALL_FINALIZE_HISTOGRAM_CREATION)
+            .execute(db)
+            .await
+        {
+            debug_error(Error::new(err).context("error finalizing histogram"));
         }
     }
 }
