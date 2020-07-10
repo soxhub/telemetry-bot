@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::convert::TryInto;
 use std::sync::Arc;
 
+use telemetry_core::debug::DEBUG;
 use telemetry_core::parser::SampleSet;
 
 #[repr(transparent)]
@@ -20,6 +21,12 @@ struct LabelValueKey(Spur);
 #[repr(transparent)]
 #[derive(Eq, PartialEq, Hash)]
 struct SeriesKey(Box<[(LabelNameKey, LabelValueKey)]>);
+
+impl SeriesKey {
+    pub fn size_of(&self) -> usize {
+        self.0.len() * std::mem::size_of::<(LabelNameKey, LabelValueKey)>()
+    }
+}
 
 #[derive(Default)]
 struct HistogramRow {
@@ -423,7 +430,10 @@ impl Connector {
             .context("invalid series id (too large)")?;
 
         // Cache the id for the series
-        self.series.insert(series_key, series_id);
+        let size_bytes = series_key.size_of();
+        if self.series.insert(series_key, series_id).is_none() {
+            DEBUG.series_added(size_bytes);
+        }
 
         Ok(series_id)
     }
