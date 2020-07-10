@@ -127,7 +127,18 @@ $func$
 LANGUAGE PLPGSQL VOLATILE;
 GRANT EXECUTE ON FUNCTION SCHEMA_CATALOG.make_histogram_table() TO prom_writer;
 
-CREATE OR REPLACE TRIGGER make_histogram_table_trigger
-    AFTER INSERT ON SCHEMA_CATALOG.histogram
-    FOR EACH ROW
-    EXECUTE PROCEDURE SCHEMA_CATALOG.make_histogram_table();
+DO $trigger$
+BEGIN
+    IF NOT EXISTS(
+        SELECT *
+        FROM information_schema.triggers
+        WHERE event_object_table = 'histogram' AND trigger_name = 'make_histogram_table_trigger'
+    )
+    THEN
+        CREATE TRIGGER make_histogram_table_trigger
+            AFTER INSERT ON SCHEMA_CATALOG.histogram
+            FOR EACH ROW
+            EXECUTE PROCEDURE SCHEMA_CATALOG.make_histogram_table();
+    END IF;
+END;
+$trigger$;
