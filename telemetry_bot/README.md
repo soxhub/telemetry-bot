@@ -33,19 +33,19 @@ STORAGE_TYPE
 
     Either "standalone" or "remote"; this option is required.
 
-REMOTE_WRITE_URL
-
-    When STORAGE_TYPE is "remote", this option is required.
-    The url to send prometheus remote write requests too; it should include the path.
-
-    e.g. "https://localhost/write"
-
 DATABASE_URL
 
     When STORAGE_TYPE is "standalone", this option is required.
     The url to connect to TimescaleDB.
 
     e.g. "postgres://postgres@localhost/defaultdb"
+
+REMOTE_WRITE_URL
+
+    When STORAGE_TYPE is "remote", this option is required.
+    The url to send prometheus remote write requests too; it should include the path.
+
+    e.g. "https://localhost/write"
 
 ```
 
