@@ -11,10 +11,10 @@ use std::cell::Cell;
 use std::sync::Arc;
 use std::time::Instant;
 
-use telemetry_prometheus::debug::DEBUG;
-use telemetry_prometheus::error::{debug_error, debug_error_enabled};
-use telemetry_prometheus::parser;
-use telemetry_prometheus::scrape::{ScrapeError, ScrapeList, ScrapeTarget};
+use telemetry_core::debug::DEBUG;
+use telemetry_core::error::{debug_error, debug_error_enabled};
+use telemetry_core::parser;
+use telemetry_core::scrape::{ScrapeError, ScrapeList, ScrapeTarget};
 
 use crate::config::*;
 use crate::storage::Storage;

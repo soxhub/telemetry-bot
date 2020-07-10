@@ -2399,28 +2399,13 @@ dependencies = [
  "smol",
  "sqlx",
  "structopt",
- "telemetry-connector",
- "telemetry-prometheus",
+ "telemetry-core",
  "telemetry-remote-write",
  "telemetry-standalone",
 ]
 
 [[package]]
-name = "telemetry-connector"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-std",
- "chrono",
- "dashmap",
- "lasso",
- "serde_json",
- "sqlx",
- "telemetry-prometheus",
-]
-
-[[package]]
-name = "telemetry-prometheus"
+name = "telemetry-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -2446,7 +2431,7 @@ dependencies = [
  "prost",
  "snap",
  "surf",
- "telemetry-prometheus",
+ "telemetry-core",
 ]
 
 [[package]]
@@ -2456,10 +2441,11 @@ dependencies = [
  "anyhow",
  "async-std",
  "chrono",
- "dotenv",
+ "dashmap",
+ "lasso",
  "serde_json",
  "sqlx",
- "telemetry-prometheus",
+ "telemetry-core",
 ]
 
 [[package]]

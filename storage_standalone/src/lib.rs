@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::convert::TryInto;
 use std::sync::Arc;
 
-use telemetry_prometheus::parser::SampleSet;
+use telemetry_core::parser::SampleSet;
 
 #[repr(transparent)]
 #[derive(Copy, Clone, Eq, PartialEq, Hash)]
@@ -71,7 +71,9 @@ impl Connector {
 
         // On startup, run to recover any potentially incomplete metric
         schema::finalize_metric_creation(&self.db).await;
-        schema::finalize_histogram_creation(&self.db).await;
+        if self.use_histogram_schema {
+            schema::finalize_histogram_creation(&self.db).await;
+        }
 
         Ok(())
     }
@@ -433,7 +435,7 @@ mod schema {
     use anyhow::{Context, Error, Result};
     use sqlx::prelude::*;
     use sqlx::Executor;
-    use telemetry_prometheus::error::debug_error;
+    use telemetry_core::error::debug_error;
 
     // Define constants as macros so that these schema names can be used with `concat!`
     macro_rules! prom_schema { () => ("prom_api") }
@@ -473,9 +475,9 @@ mod schema {
     const INSTALL_TIMESCALE_EXTENSION: &str =
         "CREATE EXTENSION IF NOT EXISTS timescaledb WITH SCHEMA public;";
     const INSTALL_PROMETHEUS_EXTENSION: &str =
-        concat!("CREATE EXTENSION IF NOT EXISTS timescale_prometheus_extra WITH SCHEMA", ext_schema!(), ";");
+        concat!("CREATE EXTENSION IF NOT EXISTS timescale_prometheus_extra WITH SCHEMA ", ext_schema!(), ";");
     const CREATE_MIGRATION_TABLE: &str = 
-        concat!("CREATE TABLE ", migrations_table!(), " (version int8 PRIMARY KEY, dirty bool NOT NULL);");
+        concat!("CREATE TABLE IF NOT EXISTS ", migrations_table!(), " (version int8 PRIMARY KEY, dirty bool NOT NULL);");
     const SELECT_MIGRATION_STATUS: &str = 
         concat!("SELECT MAX(version), BOOL_OR(dirty) FROM ", migrations_table!(), ";");
     const START_MIGRATION: &str = 
@@ -503,15 +505,18 @@ mod schema {
 
     pub async fn migrate(db: &sqlx::postgres::PgPool, histogram_ext: bool) -> Result<()> {
         let mut conn = db.acquire().await?;
+
+        // Install timescaledb extension
         conn.execute(INSTALL_TIMESCALE_EXTENSION).await?;
 
-        let (latest_version, dirty): (i64, bool) = sqlx::query_as(SELECT_MIGRATION_STATUS)
-            .fetch_optional(&mut conn)
-            .await?
-            .unwrap_or_default();
-        if latest_version < 1 {
+        // Run migrations
+        conn.execute(CREATE_MIGRATION_TABLE).await?;
+        let (latest_version, dirty): (Option<i64>, Option<bool>) = sqlx::query_as(SELECT_MIGRATION_STATUS)
+            .fetch_one(&mut conn)
+            .await?;
+        if latest_version.unwrap_or(0) < 1 {
             // Quit if a previous migration failed
-            if dirty {
+            if dirty.unwrap_or(false) {
                 return Err(anyhow::format_err!("will not run migrations because database is dirty"));
             }
 

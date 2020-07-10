@@ -174,7 +174,7 @@ struct Environment {
     #[structopt(short = "t", long, env = "SCRAPE_TARGET")]
     scrape_target: Option<String>,
 
-    /// One of "standalone", "compat" or "remote".
+    /// One of "standalone" or "remote".
     #[structopt(short = "s", long = "storage", env = "STORAGE_TYPE")]
     storage_type: String,
 
@@ -182,13 +182,12 @@ struct Environment {
     #[structopt(long = "ext", env = "STORAGE_EXTENSIONS")]
     storage_extensions: Option<String>,
 
-    /// The url to connect to timescaledb (if storage is "standalone" or "compat")
+    /// The url to connect to timescaledb (if storage is "standalone")
     #[structopt(long = "db-url", env = "DATABASE_URL")]
-    //, required_if("storage", "standalone"), required_if("storage", "compat")
     database_url: Option<String>,
 
     /// The url to send prometheus remote write requests too
-    #[structopt(long, env = "REMOTE_WRITE_URL")] //, required_if("storage", "remote")
+    #[structopt(long, env = "REMOTE_WRITE_URL")]
     remote_write_url: Option<String>,
 
     /// The hostname of the kubernetes http api; usually set by kubernetes

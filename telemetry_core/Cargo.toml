@@ -1,5 +1,5 @@
 [package]
-name = "telemetry-prometheus"
+name = "telemetry-core"
 version = "0.1.0"
 authors = ["Kevin Stenerson <kstenerson@auditboard.com>"]
 edition = "2018"

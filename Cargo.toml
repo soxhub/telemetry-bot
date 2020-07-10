@@ -1,8 +1,7 @@
 [workspace]
 members = [
     "telemetry_bot",
-    "telemetry_connector",
-    "telemetry_prometheus",
-    "telemetry_remote_write",
-    "telemetry_standalone",
+    "telemetry_core",
+    "storage_remote_write",
+    "storage_standalone",
 ]

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use prost::Message;
 
-use telemetry_prometheus::parser::Sample;
+use telemetry_core::parser::Sample;
 
 const MILLIS_PER_SECOND: i64 = 1000;
 
