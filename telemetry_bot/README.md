@@ -7,7 +7,16 @@ Telemetry bot is primarily configured via environment variables.
 Environment variables will first be loaded from a `.env` file ("dotenv"), if present;
 and then as usual from the process's environment.
 
-Here is an example configuration:
+### Standalone Example
+
+```sh
+STORAGE_TYPE=standalone
+REMOTE_WRITE_URL="postgres://postgres@localhost/telemetry"
+SCRAPE_LABELS="environment=production"
+KUBERNETES_SERVICE_HOST="kubernetes.default.svc"
+```
+
+### Remote Example
 
 ```sh
 STORAGE_TYPE=remote
