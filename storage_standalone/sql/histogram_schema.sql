@@ -21,7 +21,7 @@ LOOP
         SELECT  id,
                 metric_name,
                 table_name
-        FROM SCHEMA_CATALOG.metric
+        FROM SCHEMA_CATALOG.histogram
         WHERE metric_name = histogram_name
     ON CONFLICT DO NOTHING
     RETURNING SCHEMA_CATALOG.histogram.id,
@@ -36,15 +36,15 @@ LOOP
 
     EXIT WHEN FOUND;
 END LOOP;
-END
+END;
 $function$;
 
 CREATE OR REPLACE FUNCTION SCHEMA_CATALOG.get_or_create_histogram_table_name(
         histogram_name text, OUT id int, OUT table_name name, OUT possibly_new BOOLEAN)
 AS $func$
    SELECT id, table_name::name, false
-   FROM SCHEMA_CATALOG.metric m
-   WHERE m.metric_name = histogram_name
+   FROM SCHEMA_CATALOG.histogram h
+   WHERE h.metric_name = histogram_name
    UNION ALL
    SELECT *, true
    FROM SCHEMA_CATALOG.create_histogram_table(histogram_name)
@@ -73,8 +73,8 @@ BEGIN
     LOOP
         SELECT creation_completed
         INTO created
-        FROM SCHEMA_CATALOG.histogram m
-        WHERE m.id = r.id
+        FROM SCHEMA_CATALOG.histogram h
+        WHERE h.id = r.id
         FOR UPDATE;
 
         IF created THEN
