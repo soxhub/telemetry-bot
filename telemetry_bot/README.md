@@ -11,7 +11,7 @@ and then as usual from the process's environment.
 
 ```sh
 STORAGE_TYPE=standalone
-REMOTE_WRITE_URL="postgres://postgres@localhost/telemetry"
+DATABASE_URL="postgres://postgres@localhost/telemetry"
 SCRAPE_LABELS="environment=production"
 KUBERNETES_SERVICE_HOST="kubernetes.default.svc"
 ```
