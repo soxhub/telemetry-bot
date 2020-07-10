@@ -343,7 +343,7 @@ impl Connector {
                         )
                     "#,
                     table_name = table_name,
-                    schema_name = schema::HISTOGRAM_DATA_SCHEMA,
+                    schema_name = schema::DATA_HISTOGRAM_SCHEMA,
                     // TEMPORARY: insert timestampts using text format
                     //            b.c. sqlx has a bug with serializing in binary format
                     timestamp_elements = times.iter().map(|t| format!("'{}'", t.to_rfc3339())).collect::<Vec<_>>().join(","),
@@ -440,34 +440,56 @@ impl Connector {
     }
 }
 
+#[rustfmt::skip]
+#[allow(dead_code)]
 mod schema {
     use anyhow::Error;
     use telemetry_prometheus::error::debug_error;
 
-    // pub const CATALOG_SCHEMA: &str = "_prom_catalog";
-    pub const DATA_SCHEMA: &str = "prom_data";
-    pub const HISTOGRAM_DATA_SCHEMA: &str = "prom_data_histogram";
+    // Define constants as macros so that these schema names can be used with `concat!`
+    macro_rules! prom_schema { () => ("prom_api") }
+    macro_rules! series_view_schema { () => ("prom_series") }
+    macro_rules! metric_view_schema { () => ("prom_metric") }
+    macro_rules! data_schema { () => ("prom_data") }
+    macro_rules! data_series_schema { () => ("prom_data_series") }
+    macro_rules! data_histogram_schema { () => ("prom_data_histogram") }
+    macro_rules! info_schema { () => ("prom_info") }
+    macro_rules! catalog_schema { () => ("_prom_catalog") }
+    macro_rules! ext_schema { () => ("_prom_ext") }
 
+    // Declare const values as part of the module public api
+    pub const PROM_SCHEMA: &str = prom_schema!();
+    pub const SERIES_VIEW_SCHEMA: &str = series_view_schema!();
+    pub const METRIC_VIEW_SCHEMA: &str = metric_view_schema!();
+    pub const DATA_SCHEMA: &str = data_schema!();
+    pub const DATA_SERIES_SCHEMA: &str = data_series_schema!();
+    pub const DATA_HISTOGRAM_SCHEMA: &str = data_histogram_schema!();
+    pub const INFO_SCHEMA: &str = info_schema!();
+    pub const CATALOG_SCHEMA: &str = catalog_schema!();
+    pub const EXT_SCHEMA: &str = ext_schema!();
+
+    // Pre-define queries that can be build statically at compile time
     pub const UPSERT_METRIC_TABLE_NAME: &str =
-        "SELECT table_name, possibly_new FROM _prom_catalog.get_or_create_metric_table_name($1)";
+        concat!("SELECT table_name, possibly_new FROM ", catalog_schema!(), ".get_or_create_metric_table_name($1)");
     pub const UPSERT_HISTOGRAM_TABLE_NAME: &str =
-        "SELECT table_name, possibly_new FROM _prom_catalog.get_or_create_histogram_table_name($1)";
+        concat!("SELECT table_name, possibly_new FROM ", catalog_schema!(), ".get_or_create_histogram_table_name($1)");
     pub const UPSERT_SERIES_ID_FOR_LABELS: &str =
-        "SELECT * FROM _prom_catalog.get_or_create_series_id_for_kv_array($1, $2, $3)";
-    pub const CALL_FINALIZE_METRIC_CREATION: &str = "CALL _prom_catalog.finalize_metric_creation()";
+        concat!("SELECT * FROM ", catalog_schema!(), ".get_or_create_series_id_for_kv_array($1, $2, $3)");
+    pub const CALL_FINALIZE_METRIC_CREATION: &str =
+        concat!("CALL ", catalog_schema!(), ".finalize_metric_creation()");
     pub const CALL_FINALIZE_HISTOGRAM_CREATION: &str =
-        "CALL _prom_catalog.finalize_histogram_creation()";
+        concat!("CALL ", catalog_schema!(), ".finalize_histogram_creation()");
 
+    /// A task intended to be run in the background to finalize metric creation
     pub async fn finalize_metric_creation(db: &sqlx::postgres::PgPool) {
         if let Err(err) = sqlx::query(CALL_FINALIZE_METRIC_CREATION).execute(db).await {
             debug_error(Error::new(err).context("error finalizing metric"));
         }
     }
+
+    /// A task intended to be run in the background to finalize histogram creation
     pub async fn finalize_histogram_creation(db: &sqlx::postgres::PgPool) {
-        if let Err(err) = sqlx::query(CALL_FINALIZE_HISTOGRAM_CREATION)
-            .execute(db)
-            .await
-        {
+        if let Err(err) = sqlx::query(CALL_FINALIZE_HISTOGRAM_CREATION).execute(db).await {
             debug_error(Error::new(err).context("error finalizing histogram"));
         }
     }
