@@ -59,7 +59,7 @@ GRANT EXECUTE ON FUNCTION _prom_catalog.get_or_create_histogram_table_name(text)
 --(which happens in the make_histogram_table path).
 --
 --lock-order: histogram table, data_table
-CREATE PROCEDURE _prom_catalog.finalize_histogram_creation()
+CREATE OR REPLACE PROCEDURE _prom_catalog.finalize_histogram_creation()
 AS $proc$
 DECLARE
     r RECORD;
@@ -127,7 +127,7 @@ $func$
 LANGUAGE PLPGSQL VOLATILE;
 GRANT EXECUTE ON FUNCTION _prom_catalog.make_histogram_table() TO prom_writer;
 
-CREATE TRIGGER make_histogram_table_trigger
+CREATE OR REPLACE TRIGGER make_histogram_table_trigger
     AFTER INSERT ON _prom_catalog.histogram
     FOR EACH ROW
     EXECUTE PROCEDURE _prom_catalog.make_histogram_table();
