@@ -3,7 +3,6 @@ use chrono::prelude::*;
 use dashmap::DashMap;
 use lasso::{Spur, ThreadedRodeo};
 use sqlx::prelude::*;
-use sqlx::Executor;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::sync::Arc;
@@ -67,17 +66,8 @@ impl Connector {
 
     // Call to initialize a connector from the existing database state
     pub async fn resume(&self) -> Result<()> {
-        // TODO: Load existing metrics table names
-
-        // Create extension schema
-        if self.use_histogram_schema {
-            self.db
-                .acquire()
-                .await?
-                .execute(include_str!("../sql/histogram.sql"))
-                .await
-                .context("error initializing histogram extension")?;
-        }
+        // Run database migrations
+        schema::migrate(&self.db, self.use_histogram_schema).await?;
 
         // On startup, run to recover any potentially incomplete metric
         schema::finalize_metric_creation(&self.db).await;
@@ -118,7 +108,7 @@ impl Connector {
                  * ================================== */
 
                 // Upsert the histogram table
-                let metric_table_name = if let Some(table_name) = self.metrics.get(histogram_name) {
+                let metric_table = if let Some(table_name) = self.metrics.get(*histogram_name) {
                     Arc::clone(&table_name)
                 } else {
                     match self.upsert_metric(histogram_name, true).await {
@@ -164,7 +154,7 @@ impl Connector {
                 // Find the series id and save the histogram row to be inserted
                 if let Some(series_id) = self.series.get(&series_key) {
                     let row = histogram_rows
-                        .entry((metric_table_name, *series_id))
+                        .entry((metric_table, *series_id))
                         .or_default();
                     if sample.name.ends_with("et") {
                         // ends_with buck(et)
@@ -184,9 +174,7 @@ impl Connector {
                         .await
                     {
                         Ok(series_id) => {
-                            let row = histogram_rows
-                                .entry((metric_table_name, series_id))
-                                .or_default();
+                            let row = histogram_rows.entry((metric_table, series_id)).or_default();
                             if sample.name.ends_with("et") {
                                 // ends_with buck(et)
                                 if let Some(bucket) = bucket {
@@ -213,7 +201,7 @@ impl Connector {
                  * ================================== */
 
                 // Get the normal metric table name
-                let metric_table_name = if let Some(table_name) = self.metrics.get(sample.name) {
+                let metric_table = if let Some(table_name) = self.metrics.get(sample.name) {
                     Arc::clone(&table_name)
                 } else {
                     match self.upsert_metric(&sample.name, false).await {
@@ -256,8 +244,7 @@ impl Connector {
                 let timestamp =
                     DateTime::from_utc(NaiveDateTime::from_timestamp(timestamp, 0), Utc);
                 if let Some(series_id) = self.series.get(&series_key) {
-                    let (times, values, series_ids) =
-                        metric_rows.entry(metric_table_name).or_default();
+                    let (times, values, series_ids) = metric_rows.entry(metric_table).or_default();
                     times.push(timestamp);
                     values.push(sample.value.to_f64());
                     series_ids.push(*series_id);
@@ -268,7 +255,7 @@ impl Connector {
                     {
                         Ok(series_id) => {
                             let (times, values, series_ids) =
-                                metric_rows.entry(metric_table_name).or_default();
+                                metric_rows.entry(metric_table).or_default();
                             times.push(timestamp);
                             values.push(sample.value.to_f64());
                             series_ids.push(series_id);
@@ -291,7 +278,7 @@ impl Connector {
                     SELECT * FROM UNNEST('{timestamp_arr_str}'::timestamptz[], $1::float8[], $2::int4[])
                 "#,
                 table_name = table_name,
-                schema_name = schema::DATA_SCHEMA,
+                schema_name = schema::SCHEMA_DATA,
                 // TEMPORARY: attempt to insert timestampts using text format
                 timestamp_arr_str = format!("{{ {} }}",
                     times.iter().map(DateTime::to_rfc3339).collect::<Vec<_>>().join(",")
@@ -343,7 +330,7 @@ impl Connector {
                         )
                     "#,
                     table_name = table_name,
-                    schema_name = schema::DATA_HISTOGRAM_SCHEMA,
+                    schema_name = schema::SCHEMA_DATA_HISTOGRAM,
                     // TEMPORARY: insert timestampts using text format
                     //            b.c. sqlx has a bug with serializing in binary format
                     timestamp_elements = times.iter().map(|t| format!("'{}'", t.to_rfc3339())).collect::<Vec<_>>().join(","),
@@ -443,7 +430,9 @@ impl Connector {
 #[rustfmt::skip]
 #[allow(dead_code)]
 mod schema {
-    use anyhow::Error;
+    use anyhow::{Context, Error, Result};
+    use sqlx::prelude::*;
+    use sqlx::Executor;
     use telemetry_prometheus::error::debug_error;
 
     // Define constants as macros so that these schema names can be used with `concat!`
@@ -456,17 +445,19 @@ mod schema {
     macro_rules! info_schema { () => ("prom_info") }
     macro_rules! catalog_schema { () => ("_prom_catalog") }
     macro_rules! ext_schema { () => ("_prom_ext") }
+    macro_rules! migrations_table { () => ("prom_schema_migrations") }
 
     // Declare const values as part of the module public api
-    pub const PROM_SCHEMA: &str = prom_schema!();
-    pub const SERIES_VIEW_SCHEMA: &str = series_view_schema!();
-    pub const METRIC_VIEW_SCHEMA: &str = metric_view_schema!();
-    pub const DATA_SCHEMA: &str = data_schema!();
-    pub const DATA_SERIES_SCHEMA: &str = data_series_schema!();
-    pub const DATA_HISTOGRAM_SCHEMA: &str = data_histogram_schema!();
-    pub const INFO_SCHEMA: &str = info_schema!();
-    pub const CATALOG_SCHEMA: &str = catalog_schema!();
-    pub const EXT_SCHEMA: &str = ext_schema!();
+    pub const SCHEMA_PROM: &str = prom_schema!();
+    pub const SCHEMA_SERIES: &str = series_view_schema!();
+    pub const SCHEMA_METRIC: &str = metric_view_schema!();
+    pub const SCHEMA_DATA: &str = data_schema!();
+    pub const SCHEMA_DATA_SERIES: &str = data_series_schema!();
+    pub const SCHEMA_DATA_HISTOGRAM: &str = data_histogram_schema!();
+    pub const SCHEMA_INFO: &str = info_schema!();
+    pub const SCHEMA_CATALOG: &str = catalog_schema!();
+    pub const SCHEMA_EXT: &str = ext_schema!();
+    const MIGRATIONS_TABLE: &str = migrations_table!();
 
     // Pre-define queries that can be build statically at compile time
     pub const UPSERT_METRIC_TABLE_NAME: &str =
@@ -475,10 +466,26 @@ mod schema {
         concat!("SELECT table_name, possibly_new FROM ", catalog_schema!(), ".get_or_create_histogram_table_name($1)");
     pub const UPSERT_SERIES_ID_FOR_LABELS: &str =
         concat!("SELECT * FROM ", catalog_schema!(), ".get_or_create_series_id_for_kv_array($1, $2, $3)");
-    pub const CALL_FINALIZE_METRIC_CREATION: &str =
+    const CALL_FINALIZE_METRIC_CREATION: &str =
         concat!("CALL ", catalog_schema!(), ".finalize_metric_creation()");
-    pub const CALL_FINALIZE_HISTOGRAM_CREATION: &str =
+    const CALL_FINALIZE_HISTOGRAM_CREATION: &str =
         concat!("CALL ", catalog_schema!(), ".finalize_histogram_creation()");
+    const INSTALL_TIMESCALE_EXTENSION: &str =
+        "CREATE EXTENSION IF NOT EXISTS timescaledb WITH SCHEMA public;";
+    const INSTALL_PROMETHEUS_EXTENSION: &str =
+        concat!("CREATE EXTENSION IF NOT EXISTS timescale_prometheus_extra WITH SCHEMA", ext_schema!(), ";");
+    const CREATE_MIGRATION_TABLE: &str = 
+        concat!("CREATE TABLE ", migrations_table!(), " (version int8 PRIMARY KEY, dirty bool NOT NULL);");
+    const SELECT_MIGRATION_STATUS: &str = 
+        concat!("SELECT MAX(version), BOOL_OR(dirty) FROM ", migrations_table!(), ";");
+    const START_MIGRATION: &str = 
+        concat!("INSERT INTO ", migrations_table!(), " (version, dirty) VALUES ($1, true);");
+    const FINISH_MIGRATION: &str = 
+        concat!("UPDATE ", migrations_table!(), " SET dirty = false WHERE version = $1;");
+    const UPDATE_METADATA_WITH_EXTENSION: &str =
+        "SELECT update_tsprom_metadata($1, $2, $3);";
+    const UPDATE_METADATA_NO_EXTENSION: &str =
+        "INSERT INTO _timescaledb_catalog.metadata(key, value, include_in_telemetry) VALUES ($1, $2, $3) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, include_in_telemetry = EXCLUDED.include_in_telemetry;";
 
     /// A task intended to be run in the background to finalize metric creation
     pub async fn finalize_metric_creation(db: &sqlx::postgres::PgPool) {
@@ -492,5 +499,77 @@ mod schema {
         if let Err(err) = sqlx::query(CALL_FINALIZE_HISTOGRAM_CREATION).execute(db).await {
             debug_error(Error::new(err).context("error finalizing histogram"));
         }
+    }
+
+    pub async fn migrate(db: &sqlx::postgres::PgPool, histogram_ext: bool) -> Result<()> {
+        let mut conn = db.acquire().await?;
+        conn.execute(INSTALL_TIMESCALE_EXTENSION).await?;
+
+        let (latest_version, dirty): (i64, bool) = sqlx::query_as(SELECT_MIGRATION_STATUS)
+            .fetch_optional(&mut conn)
+            .await?
+            .unwrap_or_default();
+        if latest_version < 1 {
+            // Quit if a previous migration failed
+            if dirty {
+                return Err(anyhow::format_err!("will not run migrations because database is dirty"));
+            }
+
+            // Start the migration
+            sqlx::query(START_MIGRATION).bind(1i64).execute(&mut conn).await?;
+
+            // Run the migration
+            let base_schema = include_str!("../sql/base_schema.sql")
+                .replace("SCHEMA_CATALOG", SCHEMA_CATALOG)
+                .replace("SCHEMA_EXT", SCHEMA_EXT)
+                .replace("SCHEMA_PROM", SCHEMA_PROM)
+                .replace("SCHEMA_SERIES", SCHEMA_SERIES)
+                .replace("SCHEMA_METRIC", SCHEMA_METRIC)
+                .replace("SCHEMA_DATA", SCHEMA_DATA)
+                .replace("SCHEMA_DATA_SERIES", SCHEMA_DATA_SERIES)
+                .replace("SCHEMA_INFO", SCHEMA_INFO);
+            conn.execute(base_schema.as_str()).await?;
+
+            // Finish the migration
+            sqlx::query(FINISH_MIGRATION).bind(1i64).execute(&mut conn).await?;
+        }
+
+        // Install prometheus extension and update connector metadata
+        const BASE_SCHEMA_VERSION: &str = "0.1.0-alpha.4.1"; // from timescale_prometheus
+        if let Err(err) = conn.execute(INSTALL_PROMETHEUS_EXTENSION).await {
+            debug_error(Error::new(err).context("timescale_prometheus_extra extension not installed"));
+            update_metadata(&mut conn, false, "version", BASE_SCHEMA_VERSION).await;
+            update_metadata(&mut conn, false, "commit_hash", "").await;
+        } else {
+            update_metadata(&mut conn, true, "version", BASE_SCHEMA_VERSION).await;
+            update_metadata(&mut conn, true, "commit_hash", "").await;
+        }
+
+        // Initialize histogram extension
+        if histogram_ext {
+            let histogram_schema = include_str!("../sql/histogram_schema.sql")
+                .replace("SCHEMA_CATALOG", SCHEMA_CATALOG)
+                .replace("SCHEMA_DATA_HISTOGRAM", SCHEMA_DATA_HISTOGRAM);
+            conn.execute(histogram_schema.as_str())
+                .await
+                .context("error initializing histogram extension")?;
+        }
+
+        Ok(())
+    }
+
+    async fn update_metadata(conn: &mut sqlx::postgres::PgConnection, with_ext: bool, key: &str, value: &str) {
+        // Ignore error if it doesn't work
+        if with_ext {
+            sqlx::query(UPDATE_METADATA_WITH_EXTENSION)
+        } else {
+            sqlx::query(UPDATE_METADATA_NO_EXTENSION)
+        }
+        .bind(key)
+        .bind(value)
+        .bind(true)
+        .execute(conn)
+        .await
+        .ok();
     }
 }
