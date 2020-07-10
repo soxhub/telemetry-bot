@@ -432,7 +432,7 @@ impl Connector {
 #[rustfmt::skip]
 #[allow(dead_code)]
 mod schema {
-    use anyhow::{Context, Error, Result};
+    use anyhow::{Error, Result};
     use sqlx::prelude::*;
     use sqlx::Executor;
     use telemetry_core::error::debug_error;
@@ -447,7 +447,6 @@ mod schema {
     macro_rules! info_schema { () => ("prom_info") }
     macro_rules! catalog_schema { () => ("_prom_catalog") }
     macro_rules! ext_schema { () => ("_prom_ext") }
-    macro_rules! migrations_table { () => ("prom_schema_migrations") }
 
     // Declare const values as part of the module public api
     pub const SCHEMA_PROM: &str = prom_schema!();
@@ -459,7 +458,8 @@ mod schema {
     pub const SCHEMA_INFO: &str = info_schema!();
     pub const SCHEMA_CATALOG: &str = catalog_schema!();
     pub const SCHEMA_EXT: &str = ext_schema!();
-    const MIGRATIONS_TABLE: &str = migrations_table!();
+    const BASE_MIGRATIONS_TABLE: &str = "prom_schema_migrations";
+    const HISTOGRAM_MIGRATIONS_TABLE: &str = "bot_schema_migrations";
 
     // Pre-define queries that can be build statically at compile time
     pub const UPSERT_METRIC_TABLE_NAME: &str =
@@ -476,14 +476,6 @@ mod schema {
         "CREATE EXTENSION IF NOT EXISTS timescaledb WITH SCHEMA public;";
     const INSTALL_PROMETHEUS_EXTENSION: &str =
         concat!("CREATE EXTENSION IF NOT EXISTS timescale_prometheus_extra WITH SCHEMA ", ext_schema!(), ";");
-    const CREATE_MIGRATION_TABLE: &str = 
-        concat!("CREATE TABLE IF NOT EXISTS ", migrations_table!(), " (version int8 PRIMARY KEY, dirty bool NOT NULL);");
-    const SELECT_MIGRATION_STATUS: &str = 
-        concat!("SELECT MAX(version), BOOL_OR(dirty) FROM ", migrations_table!(), ";");
-    const START_MIGRATION: &str = 
-        concat!("INSERT INTO ", migrations_table!(), " (version, dirty) VALUES ($1, true);");
-    const FINISH_MIGRATION: &str = 
-        concat!("UPDATE ", migrations_table!(), " SET dirty = false WHERE version = $1;");
     const UPDATE_METADATA_WITH_EXTENSION: &str =
         "SELECT update_tsprom_metadata($1, $2, $3);";
     const UPDATE_METADATA_NO_EXTENSION: &str =
@@ -509,21 +501,8 @@ mod schema {
         // Install timescaledb extension
         conn.execute(INSTALL_TIMESCALE_EXTENSION).await?;
 
-        // Run migrations
-        conn.execute(CREATE_MIGRATION_TABLE).await?;
-        let (latest_version, dirty): (Option<i64>, Option<bool>) = sqlx::query_as(SELECT_MIGRATION_STATUS)
-            .fetch_one(&mut conn)
-            .await?;
-        if latest_version.unwrap_or(0) < 1 {
-            // Quit if a previous migration failed
-            if dirty.unwrap_or(false) {
-                return Err(anyhow::format_err!("will not run migrations because database is dirty"));
-            }
-
-            // Start the migration
-            sqlx::query(START_MIGRATION).bind(1i64).execute(&mut conn).await?;
-
-            // Run the migration
+        // Run base schema migrations
+        if must_run_migrations(&mut conn, BASE_MIGRATIONS_TABLE, 1).await? {
             let base_schema = include_str!("../sql/base_schema.sql")
                 .replace("SCHEMA_CATALOG", SCHEMA_CATALOG)
                 .replace("SCHEMA_EXT", SCHEMA_EXT)
@@ -533,10 +512,7 @@ mod schema {
                 .replace("SCHEMA_DATA", SCHEMA_DATA)
                 .replace("SCHEMA_DATA_SERIES", SCHEMA_DATA_SERIES)
                 .replace("SCHEMA_INFO", SCHEMA_INFO);
-            conn.execute(base_schema.as_str()).await?;
-
-            // Finish the migration
-            sqlx::query(FINISH_MIGRATION).bind(1i64).execute(&mut conn).await?;
+            run_migration(&mut conn, BASE_MIGRATIONS_TABLE, 1, &base_schema).await?;
         }
 
         // Install prometheus extension and update connector metadata
@@ -550,14 +526,15 @@ mod schema {
             update_metadata(&mut conn, true, "commit_hash", "").await;
         }
 
-        // Initialize histogram extension
+        // Run histogram schema migrations
         if histogram_ext {
+            if must_run_migrations(&mut conn, HISTOGRAM_MIGRATIONS_TABLE, 1).await? {
+
+            }
             let histogram_schema = include_str!("../sql/histogram_schema.sql")
                 .replace("SCHEMA_CATALOG", SCHEMA_CATALOG)
                 .replace("SCHEMA_DATA_HISTOGRAM", SCHEMA_DATA_HISTOGRAM);
-            conn.execute(histogram_schema.as_str())
-                .await
-                .context("error initializing histogram extension")?;
+            run_migration(&mut conn, HISTOGRAM_MIGRATIONS_TABLE, 1, &histogram_schema).await?;
         }
 
         Ok(())
@@ -576,5 +553,41 @@ mod schema {
         .execute(conn)
         .await
         .ok();
+    }
+
+    async fn must_run_migrations(conn: &mut sqlx::postgres::PgConnection, table: &str, min_version: i64) -> Result<bool> {
+        let create_migration_table = format!("CREATE TABLE IF NOT EXISTS {} (version int8 PRIMARY KEY, dirty bool NOT NULL);", table);
+        let select_migration_status = format!("SELECT MAX(version), BOOL_OR(dirty) FROM {};", table);
+
+        // Ensure the migrations table exists
+        conn.execute(create_migration_table.as_str()).await?;
+
+        // Check if we need to run migrations
+        let (latest_version, dirty): (Option<i64>, Option<bool>) =
+            sqlx::query_as(select_migration_status.as_str()).fetch_one(conn).await?;
+        if latest_version.unwrap_or(0) < min_version {
+            // Quit if a previous migration failed
+            if dirty.unwrap_or(false) {
+                return Err(anyhow::format_err!("will not run '{}' because database is dirty", table));
+            }
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    async fn run_migration(conn: &mut sqlx::postgres::PgConnection, table: &str, version: i64, content: &str) -> Result<()> {
+        // Start the migration
+        let start_migration = format!("INSERT INTO {} (version, dirty) VALUES ({}, true);", table, version);
+        conn.execute(start_migration.as_str()).await?;
+
+        // Run the migration
+        conn.execute(content).await?;
+
+        // Finish the migration
+        let finish_migration = format!("UPDATE {} SET dirty = false WHERE version = {};", table, version);
+        conn.execute(finish_migration.as_str()).await?;
+
+        Ok(())
     }
 }
