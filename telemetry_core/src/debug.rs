@@ -15,6 +15,10 @@ pub struct DebugMetrics {
     write_count: AtomicUsize,
     write_errors: AtomicUsize,
     write_skips: AtomicUsize,
+    targets_active: AtomicUsize,
+    targets_peak: AtomicUsize,
+    response_bytes_used: AtomicUsize,
+    response_bytes_peak: AtomicUsize,
 }
 
 impl DebugMetrics {
@@ -32,6 +36,10 @@ impl DebugMetrics {
             write_count: AtomicUsize::new(0),
             write_errors: AtomicUsize::new(0),
             write_skips: AtomicUsize::new(0),
+            targets_active: AtomicUsize::new(0),
+            targets_peak: AtomicUsize::new(0),
+            response_bytes_used: AtomicUsize::new(0),
+            response_bytes_peak: AtomicUsize::new(0),
         }
     }
 
@@ -92,19 +100,56 @@ impl DebugMetrics {
         self.write_skips.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn allocate_target(&self) {
+        let active = self.targets_active.fetch_add(1, Ordering::SeqCst);
+        // TODO: Use `fetch_max` when it is stable
+        if active > self.targets_peak.load(Ordering::SeqCst) {
+            self.targets_peak.store(active, Ordering::SeqCst);
+        }
+    }
+
+    pub fn drop_target(&self) {
+        self.targets_active.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    pub fn allocate_response(&self, bytes: usize) {
+        let used = self.response_bytes_used.fetch_add(bytes, Ordering::SeqCst);
+        // TODO: Use `fetch_max` when it is stable
+        if used > self.response_bytes_peak.load(Ordering::SeqCst) {
+            self.response_bytes_peak.store(used, Ordering::SeqCst);
+        }
+    }
+
+    pub fn drop_response(&self, bytes: usize) {
+        self.response_bytes_used.fetch_sub(bytes, Ordering::Relaxed);
+    }
+
     // Log the current metrics and reset the counters
     pub fn publish(&self) {
         let pod_count = self.pod_count.load(Ordering::Relaxed);
+        let targets_active = self.targets_active.load(Ordering::Relaxed);
+        let targets_peak = self.targets_peak.swap(targets_active, Ordering::Relaxed);
         let series_count = self.series_count.load(Ordering::Relaxed);
-        let series_bytes = self.series_bytes.load(Ordering::Relaxed) as f32;
+        let series_bytes = self.series_bytes.load(Ordering::Relaxed);
+        let resp_bytes_used = self.response_bytes_used.load(Ordering::Relaxed);
+        let resp_bytes_peak = self
+            .response_bytes_peak
+            .swap(resp_bytes_used, Ordering::Relaxed);
 
-        const KI_B: f32 = 1024.;
-        const MI_B: f32 = 1024. * 1024.;
-        let (series_usage, units) = if series_bytes > MI_B {
-            (series_bytes / MI_B, "MiB")
-        } else {
-            (series_bytes / KI_B, "KiB")
-        };
+        fn format_bytes(bytes: usize) -> String {
+            const KI_B: f32 = 1024.;
+            const MI_B: f32 = 1024. * 1024.;
+
+            let bytes = bytes as f32;
+            if bytes > MI_B {
+                format!("{:.1} {}", bytes / MI_B, "MiB")
+            } else {
+                format!("{:.1} {}", bytes / KI_B, "KiB")
+            }
+        }
+        let series_bytes = format_bytes(series_bytes);
+        let resp_bytes_used = format_bytes(resp_bytes_used);
+        let resp_bytes_peak = format_bytes(resp_bytes_peak);
 
         let polling_errors = self.polling_errors.swap(0, Ordering::Relaxed);
         let polling_resets = self.polling_resets.swap(0, Ordering::Relaxed);
@@ -116,8 +161,10 @@ impl DebugMetrics {
         let write_errors = self.write_errors.swap(0, Ordering::Relaxed);
         let write_skips = self.write_skips.swap(0, Ordering::Relaxed);
         println!(
-            "Debug: pods {} (errors {}, resets {}) | scraped {} (errors {}, timeouts {}, disconnects {}) | writes {} (errors {}, skipped {}) | series {} ({:.1} {})",
+            "Debug: pods {} (used {}, peak {}) | polling (errors {}, resets {}) | scraped {} (errors {}, timeouts {}, disconnects {}) | writes {} (errors {}, skipped {}) | series {} (rss {}) | response bytes (used {}, peak {})",
             pod_count,
+            targets_active,
+            targets_peak,
             polling_errors,
             polling_resets,
             scrape_count,
@@ -128,8 +175,9 @@ impl DebugMetrics {
             write_errors,
             write_skips,
             series_count,
-            series_usage,
-            units
+            series_bytes,
+            resp_bytes_used,
+            resp_bytes_peak,
         );
     }
 }

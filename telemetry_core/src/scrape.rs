@@ -5,6 +5,7 @@ use futures::stream::{StreamExt, TryStreamExt};
 use indexmap::IndexMap; // hash table w/ fast iter preserving insertion order
 use k8s_openapi::api::core::v1 as k8s;
 use parking_lot::Mutex; // faster Mutex for non-contentious access
+use std::marker::PhantomData;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
@@ -35,16 +36,28 @@ pub struct ScrapeTarget {
 
     /// The time of the last scrape
     pub last_scrape: AtomicI64,
+
+    /// Make it harder to accidentally construct a ScrapeTarget outside of the `new` constructor.
+    _dont_use_struct_literal: PhantomData<()>,
+}
+
+impl Drop for ScrapeTarget {
+    fn drop(&mut self) {
+        DEBUG.drop_target();
+    }
 }
 
 impl ScrapeTarget {
-    pub fn new(name: String, url: String) -> Self {
+    pub fn new(name: String, url: String, labels: Vec<(&'static str, Option<String>)>) -> Self {
+        DEBUG.allocate_target();
+
         let timestamp = Utc::now().naive_utc().timestamp();
         ScrapeTarget {
             name,
             url,
-            labels: Vec::new(),
+            labels,
             last_scrape: AtomicI64::new(timestamp),
+            _dont_use_struct_literal: PhantomData,
         }
     }
 
@@ -99,13 +112,7 @@ impl ScrapeTarget {
             }
         }
 
-        let initial_time = Utc::now().naive_utc().timestamp();
-        Some(ScrapeTarget {
-            name,
-            url,
-            labels,
-            last_scrape: AtomicI64::new(initial_time),
-        })
+        Some(ScrapeTarget::new(name, url, labels))
     }
 
     /// Update the `last_scrape` timestamp, and get the previous value

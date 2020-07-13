@@ -66,7 +66,11 @@ async fn run(config: Config, shutdown: piper::Receiver<()>) -> Result<()> {
         let kube_client =
             kube::Client::new(kube::Config::new("https://localhost".parse().unwrap()));
         let pods = ScrapeList::shared(kube_client, Vec::new());
-        pods.update(vec![ScrapeTarget::new("default".into(), scrape_url.into())]);
+        pods.update(vec![ScrapeTarget::new(
+            "default".into(),
+            scrape_url.into(),
+            Vec::new(),
+        )]);
         println!("Target: {}", scrape_url);
         pods
     } else {
@@ -193,6 +197,7 @@ async fn scrape_target(
     match target.scrape(std::time::Duration::from_secs(1)).await {
         Ok(input) => {
             DEBUG.scrape_succeeded();
+            DEBUG.allocate_response(input.len());
 
             // Define a vec with all of the static labels + per-endpoint labels
             let mut static_labels = Vec::with_capacity(global_labels.len() + target.labels.len());
@@ -213,6 +218,7 @@ async fn scrape_target(
                 .filter(|d| d.timestamp.map(|t| t >= max_age).unwrap_or(true))
                 .collect::<Vec<_>>();
             if parsed.samples.is_empty() {
+                DEBUG.drop_response(input.len());
                 return;
             }
 
@@ -239,6 +245,7 @@ async fn scrape_target(
                 };
                 debug_error(err);
             }
+            DEBUG.drop_response(input.len());
         }
         Err(ScrapeError::Timeout) => {
             DEBUG.scrape_timeout();
