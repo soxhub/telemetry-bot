@@ -260,8 +260,8 @@ impl ScrapeList {
                     debug_error(err.into());
                     reset = true;
 
-                    // If polling itself fails, sleep 10 seconds and try again
-                    async_std::task::sleep(std::time::Duration::from_secs(10)).await;
+                    // If polling itself fails, sleep 5 seconds and try again
+                    async_std::task::sleep(std::time::Duration::from_secs(5)).await;
                     continue 'poll;
                 }
             };
@@ -326,10 +326,13 @@ impl ScrapeList {
                     }
                     WatchEvent::Bookmark(_) => (),
                     WatchEvent::Error(err) => {
-                        DEBUG.polling_failed();
-                        debug_error(anyhow::Error::new(err).context("error watching pod list"));
-                        reset = true;
-                        break 'receive_events;
+                        // NOTE: If err code is 410; polling will restart itself
+                        if err.code != 410 {
+                            DEBUG.polling_failed();
+                            debug_error(anyhow::Error::new(err).context("error watching pod list"));
+                            reset = true;
+                            break 'receive_events;
+                        }
                     }
                 }
             }
