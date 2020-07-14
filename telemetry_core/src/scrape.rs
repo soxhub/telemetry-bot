@@ -175,11 +175,11 @@ impl ScrapeList {
     }
 
     pub fn update(&self, list: Vec<ScrapeTarget>) {
-        let mut map_ptr = self.map.lock();
+        let mut map_guard = self.map.lock();
         let mut new_map = IndexMap::new();
         let mut new_list = Vec::new();
         for target in list {
-            if let Some(prev) = map_ptr.get(&target.name) {
+            if let Some(prev) = map_guard.get(&target.name) {
                 if target.metadata_eq(&prev) {
                     let prev_scrape = prev.last_scrape.load(Ordering::SeqCst);
                     target.last_scrape.store(prev_scrape, Ordering::Relaxed);
@@ -191,14 +191,14 @@ impl ScrapeList {
         }
 
         // Update ScrapeList stored data
-        *map_ptr = new_map;
+        *map_guard = new_map;
         DEBUG.update_pods(new_list.len());
         self.list.store(Arc::new(new_list));
 
         // Release lock only after updating `list`.
         //
         // This would happen anway, but we do so explicitly to document the intended lock region.
-        std::mem::drop(map_ptr);
+        std::mem::drop(map_guard);
     }
 
     pub async fn refresh(&self) -> Result<()> {

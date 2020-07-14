@@ -5,3 +5,7 @@ members = [
     "storage_remote_write",
     "storage_standalone",
 ]
+
+[profile.release]
+codegen-units = 1   # slow down compile-time to improve runtime performance
+lto = "fat"         # perform cross-crate LTO
