@@ -298,17 +298,27 @@ async fn process_samples(
         // If we've waited for more than a second, or collected at least a 1000 rows
         // then insert whatever rows we currently have collected.
         if !batch.is_empty() && (did_timeout || batch.len() >= 1000) {
+            let batch_size = batch.len();
             let inserts = std::mem::take(&mut batch);
-            if let Err(err) = insert_samples(&db, &table_name, inserts).await {
-                debug_error(err.context("error inserting samples"));
+            match insert_samples(&db, &table_name, inserts).await {
+                Ok(rows) => DEBUG.writes_succeeded(rows as usize),
+                Err(err) => {
+                    DEBUG.writes_failed(batch_size);
+                    debug_error(err.context("error inserting samples"));
+                }
             }
         }
     }
 
     // If there are any uninserted rows after the channel closes, insert them now
     if !batch.is_empty() {
-        if let Err(err) = insert_samples(&db, &table_name, batch).await {
-            debug_error(err.context("error inserting samples"));
+        let batch_size = batch.len();
+        match insert_samples(&db, &table_name, batch).await {
+            Ok(rows) => DEBUG.writes_succeeded(rows as usize),
+            Err(err) => {
+                DEBUG.writes_failed(batch_size);
+                debug_error(err.context("error inserting samples"));
+            }
         }
     }
 }
@@ -318,7 +328,7 @@ async fn insert_samples(
     db: &sqlx::postgres::PgPool,
     table_name: &str,
     rows: Vec<SampleRow>,
-) -> Result<()> {
+) -> Result<u64> {
     // Collect rows by column
     let count = rows.len();
     let mut times = Vec::with_capacity(count);
@@ -332,7 +342,7 @@ async fn insert_samples(
 
     // Wait until a database connection is available
     let mut conn = wait_for_connection(db).await?;
-    sqlx::query(&format!(
+    let inserted = sqlx::query(&format!(
         r#"
             INSERT INTO {schema_name}.{table_name} ("time", "value", "series_id")
             SELECT * FROM UNNEST('{timestamp_arr_str}'::timestamptz[], $1::float8[], $2::int4[])
@@ -354,7 +364,7 @@ async fn insert_samples(
     .execute(&mut conn)
     .await?;
 
-    Ok(())
+    Ok(inserted)
 }
 
 async fn wait_for_connection(
