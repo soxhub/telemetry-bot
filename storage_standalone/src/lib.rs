@@ -302,7 +302,8 @@ async fn do_insert(db: &sqlx::postgres::PgPool, table_name: &str, rows: Vec<Samp
     }
 
     // Wait until a database connection is available
-    loop {
+    const MAX_RETRIES: usize = 10;
+    for _ in 0..MAX_RETRIES {
         match db.acquire().await {
             // When we get a connection, insert the rows
             Ok(mut conn) => {
