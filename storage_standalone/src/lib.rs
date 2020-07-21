@@ -186,11 +186,24 @@ impl Connector {
 
     /// Ensure tables for the metric with the given name exist, and cache the table name
     async fn upsert_metric(&self, metric_name: &str) -> Result<Arc<String>> {
+        // Acquire a connection (retry once after timeout)
+        let mut conn = match self.db.acquire().await {
+            Err(sqlx::Error::PoolTimedOut(..)) => self.db.acquire().await,
+            Err(err) => Err(err),
+            Ok(conn) => Ok(conn),
+        }
+        .context("error upserting metric")?;
+
+        // Perform the upsert
         let (table_name, finalize_metric): (String, bool) =
             sqlx::query_as(schema::UPSERT_METRIC_TABLE_NAME)
                 .bind(metric_name)
-                .fetch_one(&self.db)
-                .await?;
+                .fetch_one(&mut conn)
+                .await
+                .context("error upserting metric")?;
+
+        // Ensure the connection is released
+        std::mem::drop(conn);
 
         // Cache the table name for the metric
         let table_name = Arc::new(table_name);
