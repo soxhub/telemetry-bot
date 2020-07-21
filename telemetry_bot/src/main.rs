@@ -153,7 +153,7 @@ async fn run(config: Config, shutdown: piper::Receiver<()>) -> Result<()> {
                 .into_par_stream()
                 .limit(config.scrape_concurrency as usize)
                 .for_each(move |target| {
-                    scrape_target(
+                    perform_scrape(
                         store,
                         config.scrape_timeout,
                         &config.scrape_labels,
@@ -182,7 +182,7 @@ async fn run(config: Config, shutdown: piper::Receiver<()>) -> Result<()> {
     Ok(())
 }
 
-async fn scrape_target(
+async fn perform_scrape(
     store: &'static dyn Storage,
     timeout: std::time::Duration,
     global_labels: &'static [(String, String)],
@@ -223,33 +223,8 @@ async fn scrape_target(
                 .into_iter()
                 .filter(|d| d.timestamp.map(|t| t >= max_age).unwrap_or(true))
                 .collect::<Vec<_>>();
-            if parsed.samples.is_empty() {
-                DEBUG.drop_response(input.len());
-                return;
-            }
-
-            let total = parsed.samples.len();
-            let expected = parsed.samples.len();
-            let skipped = total - expected;
-            let (sent, errors) = store.write(timestamp, parsed, &static_labels).await;
-            if sent > 0 {
-                DEBUG.writes_succeeded(sent);
-            }
-            if skipped > 0 {
-                DEBUG.writes_skipped(skipped);
-            }
-            if !errors.is_empty() {
-                DEBUG.writes_failed(expected - sent);
-                let mut errors = errors;
-                let err = if errors.len() > 1 {
-                    errors
-                        .swap_remove(0)
-                        .context("a write failed with an error")
-                        .context(format!("write failed with {} errors", errors.len()))
-                } else {
-                    errors.swap_remove(0).context("write failed")
-                };
-                debug_error(err);
+            if !parsed.samples.is_empty() {
+                store.write(timestamp, parsed, &static_labels).await;
             }
             DEBUG.drop_response(input.len());
         }

@@ -1,14 +1,14 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use crate::{SampleValue, SeriesType};
+use crate::SeriesType;
 
 /// A single measurement for a metric at a particular timestamp (or "now")
 #[derive(Clone, Debug)]
-pub struct Sample<'a> {
-    pub name: &'a str,
-    pub labels: Vec<(&'a str, Cow<'a, str>)>,
-    pub value: SampleValue,
+pub struct Sample {
+    pub name: String,
+    pub labels: Vec<(String, String)>,
+    pub value: f64,
     pub timestamp: Option<i64>,
 }
 
@@ -18,7 +18,7 @@ pub struct SampleSet<'a> {
     pub metrics: MetricTypes<'a>,
     pub summaries: Vec<&'a str>,
     pub histograms: Vec<&'a str>,
-    pub samples: Vec<Sample<'a>>,
+    pub samples: Vec<Sample>,
 }
 
 /// A parser for Prometheus's text exposition format.
@@ -76,7 +76,7 @@ pub fn parse(input: &str) -> SampleSet {
         }
         // The line contains data
         else {
-            let value = match parse_value(&metrics, line) {
+            let value = match parse_value(line) {
                 Some(value) => value,
                 None => continue,
             };
@@ -91,7 +91,7 @@ pub fn parse(input: &str) -> SampleSet {
     }
 }
 
-fn parse_value<'i>(metric_types: &MetricTypes, line: &'i str) -> Option<Sample<'i>> {
+fn parse_value(line: &str) -> Option<Sample> {
     // Split `metric_name{labels} value timestamp` into parts
     let (metric_str, value_str, unix_str) = if line.contains('}') {
         let mut reverse_parts = line.rsplitn(2, '}'); // use rsplit, because lables could contain escaped '}'
@@ -126,7 +126,7 @@ fn parse_value<'i>(metric_types: &MetricTypes, line: &'i str) -> Option<Sample<'
             // Parse the label
             let name = head;
             let (value, offset) = parse_label_value(tail);
-            labels.push((name, value));
+            labels.push((name.to_owned(), value.to_string()));
 
             // Advance to next label
             tail = &tail[offset..];
@@ -142,20 +142,14 @@ fn parse_value<'i>(metric_types: &MetricTypes, line: &'i str) -> Option<Sample<'
         }
     }
 
-    let value = match metric_types.get(name)? {
-        SeriesType::Counter | SeriesType::Gauge => SampleValue::F64(value_str.trim().parse().ok()?),
-        SeriesType::CounterInteger | SeriesType::GaugeInteger => {
-            SampleValue::I64(value_str.trim().parse().ok()?)
-        }
-    };
-
+    let value = value_str.trim().parse().ok()?;
     let timestamp = match unix_str {
         Some(unix_str) => Some(unix_str.trim().parse().ok()?),
         None => None,
     };
 
     Some(Sample {
-        name,
+        name: name.to_owned(),
         labels,
         value,
         timestamp,
@@ -201,7 +195,6 @@ fn parse_label_value(value: &str) -> (Cow<str>, usize) {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::SampleValue;
 
     #[test]
     fn parses_text_format() {
@@ -278,9 +271,9 @@ escaped_counter{label="}"} 1
         assert_eq!(values[0].labels.len(), 2);
         assert_eq!(values[0].labels[1].0, "code");
         assert_eq!(values[0].labels[1].1, "200");
-        assert!(matches!(values[0].value, SampleValue::I64(1027)));
+        assert_eq!(values[0].value, 1027.);
         assert_eq!(values[1].labels[1].1, "400");
-        assert!(matches!(values[1].value, SampleValue::I64(3)));
+        assert_eq!(values[1].value, 3.);
 
         // It can handle commas and equal signs in label values
         assert_eq!(values[2].labels.len(), 3);
@@ -305,7 +298,7 @@ escaped_counter{label="}"} 1
 
         // It handles unusual spacing between value and timestamp
         let unusual_spacing = &values[values.len() - 2];
-        assert!(matches!(unusual_spacing.value, SampleValue::I64(1)));
+        assert_eq!(unusual_spacing.value, 1.);
         assert!(matches!(unusual_spacing.timestamp, Some(1395066363000)));
 
         // It handles '}' in label value

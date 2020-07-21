@@ -9,7 +9,7 @@ const MILLIS_PER_SECOND: i64 = 1000;
 pub async fn write_samples(
     write_url: &str,
     default_timestamp: i64,
-    scraped_samples: Vec<Sample<'_>>,
+    scraped_samples: Vec<Sample>,
     static_labels: &[(String, String)],
 ) -> Result<usize> {
     let out = scraped_samples.len();
@@ -17,8 +17,8 @@ pub async fn write_samples(
     // Build WriteRequest from samples
     let mut timeseries = Vec::new();
     for sample in scraped_samples {
+        let value = sample.value;
         let timestamp = sample.timestamp.unwrap_or(default_timestamp) * MILLIS_PER_SECOND;
-        let value = sample.value.to_f64();
         let samples = vec![proto::Sample { timestamp, value }];
         let mut labels = Vec::with_capacity(1 + static_labels.len() + sample.labels.len());
         labels.push(proto::Label {
