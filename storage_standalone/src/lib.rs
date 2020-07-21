@@ -216,28 +216,30 @@ impl Connector {
         series_key: SeriesKey,
         label_pairs: &[(&str, &str)],
     ) -> Result<i32> {
+        // Prepare labels and values
         let labels = label_pairs.iter().map(|(a, _)| *a).collect::<Vec<_>>();
         let values = label_pairs.iter().map(|(_, b)| *b).collect::<Vec<_>>();
+
+        // Acquire a connection (retry once after timeout)
+        let mut conn = match self.db.acquire().await {
+            Err(sqlx::Error::PoolTimedOut(..)) => self.db.acquire().await,
+            Err(err) => Err(err),
+            Ok(conn) => Ok(conn),
+        }
+        .context("error upserting series")?;
+
+        // Perform the upsert
         let (_table_name, series_id): (String, i64) =
             sqlx::query_as(schema::UPSERT_SERIES_ID_FOR_LABELS)
                 .bind(metric)
                 .bind(&labels)
                 .bind(&values)
-                .fetch_one(&self.db)
+                .fetch_one(&mut conn)
                 .await
                 .context("error upserting series")?;
 
-        // // NOTE: Unlike `prometheus_connector` we are not performing multiple upserts
-        // //       in a batch, so it isn't necessary to segregate them into separate transactions.
-        // let mut tx = self.db.begin().await?;
-        // let (_table_name, series_id): (String, i32) =
-        //     sqlx::query_as(schema::UPSERT_SERIES_ID_FOR_LABELS)
-        //         .bind(metric)
-        //         .bind(&labels)
-        //         .bind(&values)
-        //         .fetch_one(&mut tx)
-        //         .await?;
-        // tx.commit().await?;
+        // Ensure the connection is released
+        std::mem::drop(conn);
 
         // While the `prom_data_series.*` tables use an int8,
         // the `prom_data` table uses an int4.
