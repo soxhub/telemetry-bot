@@ -97,10 +97,17 @@ pub struct StandaloneStorage {
 impl StandaloneStorage {
     pub async fn from_config(config: &Config) -> Result<StandaloneStorage> {
         // Open a sqlx connection pool
-        let db_url = config
+        let mut db_url = config
             .database_url
             .clone()
             .ok_or_else(|| anyhow::format_err!("missing DATABASE_URL"))?;
+        if !db_url.contains("application_name") {
+            if db_url.contains('?') {
+                db_url = format!("{}&application_name=telemetry-bot", db_url);
+            } else {
+                db_url = format!("{}?application_name=telemetry-bot", db_url);
+            }
+        }
         let db_min_conn = num_cpus::get().max(1);
         let db_max_conn = config.database_conn_per_cpu as usize * db_min_conn;
 
