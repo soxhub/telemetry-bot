@@ -25,6 +25,9 @@ pub struct Config {
     /// How frequently (in seconds) to collect timeseries data from "/metrics" endpoints.
     pub scrape_interval: Duration,
 
+    /// How long (in seconds) to wait to receive a response from "/metrics" endpoints.
+    pub scrape_timeout: Duration,
+
     /// The maximum number of network sockets to use for requests to "/metrics".
     pub scrape_concurrency: u16,
 
@@ -92,6 +95,7 @@ impl Config {
             watch_prometheus_io,
             watch_telemetry_bot,
             scrape_interval: Duration::from_secs(env.scrape_interval),
+            scrape_timeout: Duration::from_secs(env.scrape_timeout),
             scrape_concurrency: if env.scrape_concurrency == 0 {
                 4096
             } else {
@@ -162,6 +166,10 @@ struct Environment {
     /// How frequently (in seconds) to scrape from "/metrics" endpoints
     #[structopt(long, env = "SCRAPE_INTERVAL", default_value = "15")]
     scrape_interval: u64,
+
+    /// How long (in seconds) to wait for "/metrics" requests
+    #[structopt(long, env = "SCRAPE_TIMEOUT", default_value = "5")]
+    scrape_timeout: u64,
 
     /// The max number of network sockets to use for "/metrics" requests
     #[structopt(long, env = "SCRAPE_CONCURRENCY", default_value = "4096")]

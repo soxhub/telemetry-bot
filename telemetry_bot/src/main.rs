@@ -153,7 +153,12 @@ async fn run(config: Config, shutdown: piper::Receiver<()>) -> Result<()> {
                 .into_par_stream()
                 .limit(config.scrape_concurrency as usize)
                 .for_each(move |target| {
-                    scrape_target(store, &config.scrape_labels, Arc::clone(&target))
+                    scrape_target(
+                        store,
+                        config.scrape_timeout,
+                        &config.scrape_labels,
+                        Arc::clone(&target),
+                    )
                 })
                 .await;
 
@@ -184,6 +189,7 @@ async fn run(config: Config, shutdown: piper::Receiver<()>) -> Result<()> {
 
 async fn scrape_target(
     store: &'static dyn Storage,
+    timeout: std::time::Duration,
     global_labels: &'static [(String, String)],
     target: Arc<ScrapeTarget>,
 ) {
@@ -199,7 +205,7 @@ async fn scrape_target(
         target.bookmark(timestamp),
         timestamp - (5 * 60), // at most ~5 minute old timestamps
     );
-    match target.scrape(std::time::Duration::from_secs(1)).await {
+    match target.scrape(timeout).await {
         Ok(input) => {
             DEBUG.scrape_succeeded();
             DEBUG.allocate_response(input.len());
