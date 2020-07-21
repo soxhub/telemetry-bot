@@ -1,5 +1,6 @@
 use anyhow::{Context, Error, Result};
 use chrono::prelude::*;
+use crossbeam::channel;
 use dashmap::DashMap;
 use lasso::{Spur, ThreadedRodeo};
 use sqlx::prelude::*;
@@ -8,6 +9,7 @@ use std::convert::TryInto;
 use std::sync::Arc;
 
 use telemetry_core::debug::DEBUG;
+use telemetry_core::error::debug_error;
 use telemetry_core::parser::SampleSet;
 
 #[repr(transparent)]
@@ -28,6 +30,9 @@ impl SeriesKey {
     }
 }
 
+type SampleRows = (Vec<DateTime<Utc>>, Vec<f64>, Vec<i32>);
+type SampleRow = (DateTime<Utc>, f64, i32);
+
 #[derive(Default)]
 struct HistogramRow {
     count: Option<f64>,
@@ -44,6 +49,9 @@ pub struct Connector {
     /// A map of metric name to metric table name
     metrics: DashMap<String, Arc<String>>,
 
+    /// A map of metric table names to insert tasks (via a channel)
+    inserters: DashMap<Arc<String>, channel::Sender<Vec<SampleRow>>>,
+
     /// An interned map of label names to integer ids
     label_names: ThreadedRodeo<Spur>,
 
@@ -58,6 +66,7 @@ impl Connector {
     pub fn new(db: sqlx::postgres::PgPool) -> Self {
         Self {
             db,
+            inserters: DashMap::new(),
             series: DashMap::new(),
             metrics: DashMap::new(),
             label_names: ThreadedRodeo::new(),
@@ -136,9 +145,7 @@ impl Connector {
             }
         }
 
-        // TODO: Maybe create a channel+task per metric to perform batch inserts,
-        //       instead of inserting only a couple values at a time as is more likely here.
-        let mut metric_rows: HashMap<Arc<String>, (Vec<DateTime<Utc>>, Vec<f64>, Vec<i32>)> =
+        let mut metric_rows: HashMap<Arc<String>, Vec<SampleRow>> =
             HashMap::with_capacity(scraped.samples.len());
         for sample in scraped.samples {
             // If use_histogram_schema is enabled, then store histogram metrics in a different schema
@@ -266,21 +273,16 @@ impl Connector {
                 let timestamp =
                     DateTime::from_utc(NaiveDateTime::from_timestamp(timestamp, 0), Utc);
                 if let Some(series_id) = self.series.get(&series_key) {
-                    let (times, values, series_ids) = metric_rows.entry(metric_table).or_default();
-                    times.push(timestamp);
-                    values.push(sample.value.to_f64());
-                    series_ids.push(*series_id);
+                    let row = (timestamp, sample.value.to_f64(), *series_id);
+                    metric_rows.entry(metric_table).or_default().push(row);
                 } else {
                     match self
                         .upsert_series(&sample.name, series_key, &label_pairs)
                         .await
                     {
                         Ok(series_id) => {
-                            let (times, values, series_ids) =
-                                metric_rows.entry(metric_table).or_default();
-                            times.push(timestamp);
-                            values.push(sample.value.to_f64());
-                            series_ids.push(series_id);
+                            let row = (timestamp, sample.value.to_f64(), series_id);
+                            metric_rows.entry(metric_table).or_default().push(row);
                         }
                         Err(err) => {
                             errors.push(err);
@@ -293,26 +295,17 @@ impl Connector {
 
         // Insert the data rows
         let mut inserted = 0;
-        for (table_name, (times, values, series_ids)) in metric_rows {
-            let insert_result = sqlx::query(&format!(
-                r#"
-                    INSERT INTO {schema_name}.{table_name} ("time", "value", "series_id")
-                    SELECT * FROM UNNEST('{timestamp_arr_str}'::timestamptz[], $1::float8[], $2::int4[])
-                "#,
-                table_name = table_name,
-                schema_name = schema::SCHEMA_DATA,
-                // TEMPORARY: attempt to insert timestampts using text format
-                timestamp_arr_str = format!("{{ {} }}",
-                    times.iter().map(DateTime::to_rfc3339).collect::<Vec<_>>().join(",")
-                ),
-            ))
-            .bind(&values)
-            .bind(&series_ids)
-            .execute(&self.db)
-            .await;
-            match insert_result {
-                Ok(rows) => inserted += rows as usize,
-                Err(err) => errors.push(Error::new(err).context("error inserting data rows")),
+        for (table_name, rows) in metric_rows {
+            let insert_key = Arc::clone(&table_name);
+            let insert_task = self.inserters.entry(insert_key).or_insert_with(move || {
+                let (tx, rx) = channel::unbounded();
+                async_std::task::spawn(receive_inserts(self.db.clone(), table_name, rx));
+                tx
+            });
+            let count = rows.len();
+            match insert_task.send(rows) {
+                Ok(_) => inserted += count,
+                Err(err) => errors.push(Error::new(err).context("error inserting histogram rows")),
             }
         }
 
@@ -339,6 +332,7 @@ impl Connector {
                     buckets.push(row.buckets);
                 }
             }
+            // FIXME: Send data to a "histogram insert worker" instead
             for (table_name, (times, series_ids, counts, sums, buckets)) in histogram_batches {
                 let insert_result = sqlx::query(&format!(
                     r#"
@@ -373,6 +367,12 @@ impl Connector {
         }
 
         (inserted, errors)
+    }
+
+    /// Tells the connector that we are done scraping and it should send any remaining samples
+    pub async fn finish_samples(&self) {
+        // Closes all of the channels
+        self.inserters.clear();
     }
 
     async fn upsert_metric(&self, metric_name: &str, histogram: bool) -> Result<Arc<String>> {
@@ -449,6 +449,92 @@ impl Connector {
         }
 
         Ok(series_id)
+    }
+}
+
+/// A spawnable async task that recv rows from a channel and inserts them (batched) into the database.
+async fn receive_inserts(
+    db: sqlx::postgres::PgPool,
+    table_name: Arc<String>,
+    rx: channel::Receiver<Vec<SampleRow>>,
+) {
+    let mut collected = Vec::new();
+    while let Ok(rows) = rx.recv() {
+        if collected.is_empty() {
+            collected = rows;
+        } else {
+            collected.extend(rows);
+        }
+
+        // If we've collected at least a 1000 rows, then 
+        if collected.len() >= 1000 {
+            let inserts = std::mem::take(&mut collected);
+            do_insert(&db, &table_name, inserts).await;
+        }
+    }
+
+    // If there are any uninserted rows after the channel closes, insert them now
+    if !collected.is_empty() {
+        do_insert(&db, &table_name, collected).await;
+    }
+}
+
+/// Inserts a set of samples into the specified data table
+async fn do_insert(db: &sqlx::postgres::PgPool, table_name: &str, rows: Vec<SampleRow>) {
+    // Collect rows by column
+    let count = rows.len();
+    let mut times = Vec::with_capacity(count);
+    let mut values = Vec::with_capacity(count);
+    let mut series_ids = Vec::with_capacity(count);
+    for (time, value, series_id) in rows {
+        times.push(time);
+        values.push(value);
+        series_ids.push(series_id);
+    }
+
+    // Wait until a database connection is available
+    loop {
+        match db.acquire().await {
+            // When we get a connection, insert the rows
+            Ok(mut conn) => {
+                let insert_result = sqlx::query(&format!(
+                    r#"
+                        INSERT INTO {schema_name}.{table_name} ("time", "value", "series_id")
+                        SELECT * FROM UNNEST('{timestamp_arr_str}'::timestamptz[], $1::float8[], $2::int4[])
+                    "#,
+                    table_name = table_name,
+                    schema_name = schema::SCHEMA_DATA,
+                    // TEMPORARY: attempt to insert timestampts using text format
+                    timestamp_arr_str = format!(
+                        "{{ {} }}",
+                        times
+                            .iter()
+                            .map(DateTime::to_rfc3339)
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    ),
+                ))
+                .bind(&values)
+                .bind(&series_ids)
+                .execute(&mut conn)
+                .await;
+                if let Err(err) = insert_result {
+                    debug_error(Error::new(err).context("error inserting data rows"));
+                }
+                break;
+            }
+
+            // If a connection is unavailable, retry
+            Err(sqlx::Error::PoolTimedOut(..)) => {
+                continue;
+            }
+
+            // If any other error occurs, exit quickly
+            Err(err) => {
+                debug_error(Error::new(err).context("error inserting data rows"));
+                break;
+            }
+        }
     }
 }
 

@@ -157,6 +157,11 @@ async fn run(config: Config, shutdown: piper::Receiver<()>) -> Result<()> {
                 })
                 .await;
 
+            // Perform any finalization
+            if let Err(err) = store.finish().await {
+                debug_error(err.context("error finalizing samples"));
+            }
+
             // Sleep until the next scrape interval
             if let Some(delay) = config.scrape_interval.checked_sub(start.elapsed()) {
                 async_std::task::sleep(delay).await;
