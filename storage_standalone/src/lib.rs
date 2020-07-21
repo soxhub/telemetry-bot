@@ -178,7 +178,7 @@ impl Connector {
             inserted += rows.len();
             let insert_key = Arc::clone(&table_name);
             let insert_task = self.inserters.entry(insert_key).or_insert_with(move || {
-                let (tx, rx) = async_std::sync::channel(255);
+                let (tx, rx) = async_std::sync::channel(1024);
                 async_std::task::spawn(process_samples(self.db.clone(), table_name, rx));
                 tx
             });
@@ -297,18 +297,26 @@ async fn process_samples(
         // then insert whatever rows we currently have collected.
         if !batch.is_empty() && (did_timeout || batch.len() >= 1000) {
             let inserts = std::mem::take(&mut batch);
-            insert_samples(&db, &table_name, inserts).await;
+            if let Err(err) = insert_samples(&db, &table_name, inserts).await {
+                debug_error(err.context("error inserting samples"));
+            }
         }
     }
 
     // If there are any uninserted rows after the channel closes, insert them now
     if !batch.is_empty() {
-        insert_samples(&db, &table_name, batch).await;
+        if let Err(err) = insert_samples(&db, &table_name, batch).await {
+            debug_error(err.context("error inserting samples"));
+        }
     }
 }
 
 /// Inserts a set of samples into the specified data table
-async fn insert_samples(db: &sqlx::postgres::PgPool, table_name: &str, rows: Vec<SampleRow>) {
+async fn insert_samples(
+    db: &sqlx::postgres::PgPool,
+    table_name: &str,
+    rows: Vec<SampleRow>,
+) -> Result<()> {
     // Collect rows by column
     let count = rows.len();
     let mut times = Vec::with_capacity(count);
@@ -321,48 +329,45 @@ async fn insert_samples(db: &sqlx::postgres::PgPool, table_name: &str, rows: Vec
     }
 
     // Wait until a database connection is available
-    const MAX_RETRIES: usize = 10;
-    for _ in 0..MAX_RETRIES {
-        match db.acquire().await {
-            // When we get a connection, insert the rows
-            Ok(mut conn) => {
-                let insert_result = sqlx::query(&format!(
-                    r#"
-                        INSERT INTO {schema_name}.{table_name} ("time", "value", "series_id")
-                        SELECT * FROM UNNEST('{timestamp_arr_str}'::timestamptz[], $1::float8[], $2::int4[])
-                    "#,
-                    table_name = table_name,
-                    schema_name = schema::SCHEMA_DATA,
-                    // TEMPORARY: attempt to insert timestampts using text format
-                    timestamp_arr_str = format!(
-                        "{{ {} }}",
-                        times
-                            .iter()
-                            .map(DateTime::to_rfc3339)
-                            .collect::<Vec<_>>()
-                            .join(",")
-                    ),
-                ))
-                .bind(&values)
-                .bind(&series_ids)
-                .execute(&mut conn)
-                .await;
-                if let Err(err) = insert_result {
-                    debug_error(Error::new(err).context("error inserting data rows"));
-                }
-                break;
-            }
+    let mut conn = wait_for_connection(db).await?;
+    sqlx::query(&format!(
+        r#"
+            INSERT INTO {schema_name}.{table_name} ("time", "value", "series_id")
+            SELECT * FROM UNNEST('{timestamp_arr_str}'::timestamptz[], $1::float8[], $2::int4[])
+        "#,
+        table_name = table_name,
+        schema_name = schema::SCHEMA_DATA,
+        // TEMPORARY: attempt to insert timestampts using text format
+        timestamp_arr_str = format!(
+            "{{ {} }}",
+            times
+                .iter()
+                .map(DateTime::to_rfc3339)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+    ))
+    .bind(&values)
+    .bind(&series_ids)
+    .execute(&mut conn)
+    .await?;
 
-            // If a connection is unavailable, retry
-            Err(sqlx::Error::PoolTimedOut(..)) => {
+    Ok(())
+}
+
+async fn wait_for_connection(
+    db: &sqlx::postgres::PgPool,
+) -> sqlx::Result<sqlx::pool::PoolConnection<sqlx::postgres::PgConnection>> {
+    const MAX_RETRIES: usize = 10;
+    let mut attempts = 1;
+    loop {
+        match db.acquire().await {
+            Err(sqlx::Error::PoolTimedOut(..)) if attempts < MAX_RETRIES => {
+                attempts += 1;
                 continue;
             }
-
-            // If any other error occurs, exit quickly
-            Err(err) => {
-                debug_error(Error::new(err).context("error inserting data rows"));
-                break;
-            }
+            Err(err) => return Err(err),
+            Ok(conn) => return Ok(conn),
         }
     }
 }
