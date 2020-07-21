@@ -257,7 +257,7 @@ impl Connector {
     }
 }
 
-const MAX_BATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+const MAX_BATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// A spawnable async task that recv rows from a channel and inserts them (batched) into the database.
 async fn process_samples(
