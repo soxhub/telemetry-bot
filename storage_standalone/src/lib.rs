@@ -30,15 +30,7 @@ impl SeriesKey {
     }
 }
 
-type SampleRows = (Vec<DateTime<Utc>>, Vec<f64>, Vec<i32>);
 type SampleRow = (DateTime<Utc>, f64, i32);
-
-#[derive(Default)]
-struct HistogramRow {
-    count: Option<f64>,
-    sum: Option<f64>,
-    buckets: HashMap<String, f64>,
-}
 
 pub struct Connector {
     db: sqlx::postgres::PgPool,
@@ -57,9 +49,6 @@ pub struct Connector {
 
     /// An interned map of label values to integer ids
     label_values: ThreadedRodeo<Spur>,
-
-    /// Whether to write histograms to the custom `prom_data_histogram` schema
-    use_histogram_schema: bool,
 }
 
 impl Connector {
@@ -71,25 +60,16 @@ impl Connector {
             metrics: DashMap::new(),
             label_names: ThreadedRodeo::new(),
             label_values: ThreadedRodeo::new(),
-            use_histogram_schema: false,
         }
-    }
-
-    pub fn with_ext_histogram_schema(mut self, enabled: bool) -> Self {
-        self.use_histogram_schema = enabled;
-        self
     }
 
     // Call to initialize a connector from the existing database state
     pub async fn resume(&self) -> Result<()> {
         // Run database migrations
-        schema::migrate(&self.db, self.use_histogram_schema).await?;
+        schema::migrate(&self.db).await?;
 
         // On startup, run to recover any potentially incomplete metric
         schema::finalize_metric_creation(&self.db).await;
-        if self.use_histogram_schema {
-            schema::finalize_histogram_creation(&self.db).await;
-        }
 
         Ok(())
     }
@@ -134,160 +114,58 @@ impl Connector {
     ) -> (usize, Vec<Error>) {
         let mut errors = Vec::new();
 
-        let mut histogram_rows: HashMap<(Arc<String>, i32), HistogramRow> = HashMap::new();
-        let mut histogram_metrics = HashMap::new();
-        if self.use_histogram_schema {
-            histogram_metrics.reserve(scraped.histograms.len() * 3);
-            for name in scraped.histograms {
-                histogram_metrics.insert(format!("{}_bucket", name), name);
-                histogram_metrics.insert(format!("{}_count", name), name);
-                histogram_metrics.insert(format!("{}_sum", name), name);
-            }
-        }
-
-        let mut metric_rows: HashMap<Arc<String>, Vec<SampleRow>> =
+        // Collect samples as rows per table
+        let mut rows: HashMap<Arc<String>, Vec<SampleRow>> =
             HashMap::with_capacity(scraped.samples.len());
         for sample in scraped.samples {
-            // If use_histogram_schema is enabled, then store histogram metrics in a different schema
-            if let Some(histogram_name) = histogram_metrics.get(sample.name) {
-                /* ==================================
-                 * Collect rows for `histogram` table
-                 * ================================== */
-
-                // Upsert the histogram table
-                let metric_table = if let Some(table_name) = self.metrics.get(*histogram_name) {
-                    Arc::clone(&table_name)
-                } else {
-                    match self.upsert_metric(histogram_name, true).await {
-                        Ok(table_name) => table_name,
-                        Err(err) => {
-                            errors.push(err);
-                            continue;
-                        }
-                    }
-                };
-
-                // Collect dynamic and static labels
-                let num_labels = 1 + static_labels.len() + sample.labels.len();
-                let mut bucket = None;
-                let mut label_pairs = Vec::with_capacity(num_labels);
-                label_pairs.push(("__name__", *histogram_name));
-                for (name, value) in static_labels {
-                    label_pairs.push((&name, &value));
-                }
-                for (name, value) in &sample.labels {
-                    if *name == "le" {
-                        bucket = Some(value);
-                    } else {
-                        label_pairs.push((&name, &value));
-                    }
-                }
-
-                // Labels must be sorted by name alphabetically
-                label_pairs.sort_by(|a, b| a.0.cmp(&b.0));
-
-                // Create a comparable + hashable key for the series
-                let series_key = self.build_series_key(&label_pairs);
-
-                // Find the series id and save the histogram row to be inserted
-                if let Some(series_id) = self.series.get(&series_key) {
-                    let row = histogram_rows
-                        .entry((metric_table, *series_id))
-                        .or_default();
-                    if sample.name.ends_with("et") {
-                        // ends_with buck(et)
-                        if let Some(le) = bucket {
-                            row.buckets.insert(le.to_string(), sample.value.to_f64());
-                        }
-                    } else if sample.name.ends_with('m') {
-                        // ends_with su(m)
-                        row.sum = Some(sample.value.to_f64().into());
-                    } else {
-                        // ends_with count
-                        row.count = Some(sample.value.to_f64().into());
-                    }
-                } else {
-                    match self
-                        .upsert_series(&histogram_name, series_key, &label_pairs)
-                        .await
-                    {
-                        Ok(series_id) => {
-                            let row = histogram_rows.entry((metric_table, series_id)).or_default();
-                            if sample.name.ends_with("et") {
-                                // ends_with buck(et)
-                                if let Some(bucket) = bucket {
-                                    row.buckets
-                                        .insert(bucket.to_string(), sample.value.to_f64().into());
-                                }
-                            } else if sample.name.ends_with('m') {
-                                // ends_with su(m)
-                                row.sum = Some(sample.value.to_f64().into());
-                            } else {
-                                // ends_with count
-                                row.count = Some(sample.value.to_f64().into());
-                            }
-                        }
-                        Err(err) => {
-                            errors.push(err);
-                            continue;
-                        }
-                    }
-                }
+            // Get the normal metric table name
+            let metric_table = if let Some(table_name) = self.metrics.get(sample.name) {
+                Arc::clone(&table_name)
             } else {
-                /* ==================================
-                 * Collect rows for `prom_data` table
-                 * ================================== */
-
-                // Get the normal metric table name
-                let metric_table = if let Some(table_name) = self.metrics.get(sample.name) {
-                    Arc::clone(&table_name)
-                } else {
-                    match self.upsert_metric(&sample.name, false).await {
-                        Ok(table_name) => table_name,
-                        Err(err) => {
-                            errors.push(err);
-                            continue;
-                        }
+                match self.upsert_metric(&sample.name).await {
+                    Ok(table_name) => table_name,
+                    Err(err) => {
+                        errors.push(err);
+                        continue;
                     }
-                };
-
-                // Collect dynamic and static labels
-                let num_labels = 1 + static_labels.len() + sample.labels.len();
-                let mut label_pairs = Vec::with_capacity(num_labels);
-                label_pairs.push(("__name__", sample.name));
-                for (name, value) in static_labels {
-                    label_pairs.push((&name, &value));
                 }
-                for (name, value) in &sample.labels {
-                    label_pairs.push((&name, &value));
-                }
+            };
 
-                // Labels must be sorted by name alphabetically
-                label_pairs.sort_by(|a, b| a.0.cmp(&b.0));
+            // Collect dynamic and static labels
+            let num_labels = 1 + static_labels.len() + sample.labels.len();
+            let mut label_pairs = Vec::with_capacity(num_labels);
+            label_pairs.push(("__name__", sample.name));
+            for (name, value) in static_labels {
+                label_pairs.push((&name, &value));
+            }
+            for (name, value) in &sample.labels {
+                label_pairs.push((&name, &value));
+            }
 
-                // Create a comparable + hashable key for the series
-                let series_key = self.build_series_key(&label_pairs);
+            // Labels must be sorted by name alphabetically
+            label_pairs.sort_by(|a, b| a.0.cmp(&b.0));
 
-                // Find the series id and save the data row to be inserted
-                let timestamp = sample.timestamp.unwrap_or(default_timestamp);
-                let timestamp =
-                    DateTime::from_utc(NaiveDateTime::from_timestamp(timestamp, 0), Utc);
-                if let Some(series_id) = self.series.get(&series_key) {
-                    let row = (timestamp, sample.value.to_f64(), *series_id);
-                    metric_rows.entry(metric_table).or_default().push(row);
-                } else {
-                    match self
-                        .upsert_series(&sample.name, series_key, &label_pairs)
-                        .await
-                    {
-                        Ok(series_id) => {
-                            let row = (timestamp, sample.value.to_f64(), series_id);
-                            metric_rows.entry(metric_table).or_default().push(row);
-                        }
-                        Err(err) => {
-                            errors.push(err);
-                            continue;
-                        }
+            // Create a comparable + hashable key for the series
+            let series_key = self.build_series_key(&label_pairs);
+
+            // Find the series id and save the data row to be inserted
+            let timestamp = sample.timestamp.unwrap_or(default_timestamp);
+            let timestamp = DateTime::from_utc(NaiveDateTime::from_timestamp(timestamp, 0), Utc);
+            if let Some(series_id) = self.series.get(&series_key) {
+                let row = (timestamp, sample.value.to_f64(), *series_id);
+                rows.entry(metric_table).or_default().push(row);
+            } else {
+                match self
+                    .upsert_series(&sample.name, series_key, &label_pairs)
+                    .await
+                {
+                    Ok(series_id) => {
+                        let row = (timestamp, sample.value.to_f64(), series_id);
+                        rows.entry(metric_table).or_default().push(row);
+                    }
+                    Err(err) => {
+                        errors.push(err);
+                        continue;
                     }
                 }
             }
@@ -295,7 +173,7 @@ impl Connector {
 
         // Insert the data rows
         let mut inserted = 0;
-        for (table_name, rows) in metric_rows {
+        for (table_name, rows) in rows {
             let insert_key = Arc::clone(&table_name);
             let insert_task = self.inserters.entry(insert_key).or_insert_with(move || {
                 let (tx, rx) = channel::unbounded();
@@ -309,63 +187,6 @@ impl Connector {
             }
         }
 
-        // Insert the histogram rows
-        if self.use_histogram_schema {
-            type Batch = (
-                Vec<DateTime<Utc>>,
-                Vec<i32>,
-                Vec<f64>,
-                Vec<f64>,
-                Vec<HashMap<String, f64>>,
-            );
-            let timestamp =
-                DateTime::from_utc(NaiveDateTime::from_timestamp(default_timestamp, 0), Utc);
-            let mut histogram_batches: HashMap<Arc<String>, Batch> = HashMap::new();
-            for ((table_name, series_id), row) in histogram_rows {
-                if let (Some(count), Some(sum)) = (row.count, row.sum) {
-                    let (times, series_ids, counts, sums, buckets) =
-                        histogram_batches.entry(table_name).or_default();
-                    times.push(timestamp);
-                    series_ids.push(series_id);
-                    counts.push(count);
-                    sums.push(sum);
-                    buckets.push(row.buckets);
-                }
-            }
-            // FIXME: Send data to a "histogram insert worker" instead
-            for (table_name, (times, series_ids, counts, sums, buckets)) in histogram_batches {
-                let insert_result = sqlx::query(&format!(
-                    r#"
-                        INSERT INTO {schema_name}.{table_name} ("time", "series_id", "count", "sum", "le")
-                        SELECT * FROM UNNEST(
-                            ARRAY[{timestamp_elements}]::timestamptz[],
-                            $1::int4[],
-                            $2::float8[],
-                            $3::float8[],
-                            ARRAY[{jsonb_elements}]::jsonb[]
-                        )
-                    "#,
-                    table_name = table_name,
-                    schema_name = schema::SCHEMA_DATA_HISTOGRAM,
-                    // TEMPORARY: insert timestampts using text format
-                    //            b.c. sqlx has a bug with serializing in binary format
-                    timestamp_elements = times.iter().map(|t| format!("'{}'", t.to_rfc3339())).collect::<Vec<_>>().join(","),
-                    jsonb_elements = buckets.iter().map(|b| format!("'{}'", serde_json::to_string(b).unwrap_or_default())).collect::<Vec<_>>().join(","),
-                ))
-                .bind(&series_ids)
-                .bind(&counts)
-                .bind(&sums)
-                .execute(&self.db)
-                .await;
-                match insert_result {
-                    Ok(rows) => inserted += rows as usize,
-                    Err(err) => {
-                        errors.push(Error::new(err).context("error inserting histogram rows"))
-                    }
-                }
-            }
-        }
-
         (inserted, errors)
     }
 
@@ -375,20 +196,12 @@ impl Connector {
         self.inserters.clear();
     }
 
-    async fn upsert_metric(&self, metric_name: &str, histogram: bool) -> Result<Arc<String>> {
+    async fn upsert_metric(&self, metric_name: &str) -> Result<Arc<String>> {
         let (table_name, finalize_metric): (String, bool) =
             sqlx::query_as(schema::UPSERT_METRIC_TABLE_NAME)
                 .bind(metric_name)
                 .fetch_one(&self.db)
                 .await?;
-        let finalize_histogram = histogram && {
-            let (_, finalize_metric): (String, bool) =
-                sqlx::query_as(schema::UPSERT_HISTOGRAM_TABLE_NAME)
-                    .bind(metric_name)
-                    .fetch_one(&self.db)
-                    .await?;
-            finalize_metric
-        };
 
         // Cache the table name for the metric
         let table_name = Arc::new(table_name);
@@ -398,10 +211,6 @@ impl Connector {
         if finalize_metric {
             let db = self.db.clone();
             async_std::task::spawn(async move { schema::finalize_metric_creation(&db).await });
-        }
-        if finalize_histogram {
-            let db = self.db.clone();
-            async_std::task::spawn(async move { schema::finalize_histogram_creation(&db).await });
         }
 
         Ok(table_name)
@@ -466,7 +275,7 @@ async fn receive_inserts(
             collected.extend(rows);
         }
 
-        // If we've collected at least a 1000 rows, then 
+        // If we've collected at least a 1000 rows, then
         if collected.len() >= 1000 {
             let inserts = std::mem::take(&mut collected);
             do_insert(&db, &table_name, inserts).await;
@@ -552,7 +361,6 @@ mod schema {
     macro_rules! metric_view_schema { () => ("prom_metric") }
     macro_rules! data_schema { () => ("prom_data") }
     macro_rules! data_series_schema { () => ("prom_data_series") }
-    macro_rules! data_histogram_schema { () => ("prom_data_histogram") }
     macro_rules! info_schema { () => ("prom_info") }
     macro_rules! catalog_schema { () => ("_prom_catalog") }
     macro_rules! ext_schema { () => ("_prom_ext") }
@@ -563,7 +371,6 @@ mod schema {
     pub const SCHEMA_METRIC: &str = metric_view_schema!();
     pub const SCHEMA_DATA: &str = data_schema!();
     pub const SCHEMA_DATA_SERIES: &str = data_series_schema!();
-    pub const SCHEMA_DATA_HISTOGRAM: &str = data_histogram_schema!();
     pub const SCHEMA_INFO: &str = info_schema!();
     pub const SCHEMA_CATALOG: &str = catalog_schema!();
     pub const SCHEMA_EXT: &str = ext_schema!();
@@ -573,14 +380,10 @@ mod schema {
     // Pre-define queries that can be build statically at compile time
     pub const UPSERT_METRIC_TABLE_NAME: &str =
         concat!("SELECT table_name, possibly_new FROM ", catalog_schema!(), ".get_or_create_metric_table_name($1)");
-    pub const UPSERT_HISTOGRAM_TABLE_NAME: &str =
-        concat!("SELECT table_name, possibly_new FROM ", catalog_schema!(), ".get_or_create_histogram_table_name($1)");
     pub const UPSERT_SERIES_ID_FOR_LABELS: &str =
         concat!("SELECT * FROM ", catalog_schema!(), ".get_or_create_series_id_for_kv_array($1, $2, $3)");
     const CALL_FINALIZE_METRIC_CREATION: &str =
         concat!("CALL ", catalog_schema!(), ".finalize_metric_creation()");
-    const CALL_FINALIZE_HISTOGRAM_CREATION: &str =
-        concat!("CALL ", catalog_schema!(), ".finalize_histogram_creation()");
     const INSTALL_TIMESCALE_EXTENSION: &str =
         "CREATE EXTENSION IF NOT EXISTS timescaledb WITH SCHEMA public;";
     const INSTALL_PROMETHEUS_EXTENSION: &str =
@@ -597,14 +400,7 @@ mod schema {
         }
     }
 
-    /// A task intended to be run in the background to finalize histogram creation
-    pub async fn finalize_histogram_creation(db: &sqlx::postgres::PgPool) {
-        if let Err(err) = sqlx::query(CALL_FINALIZE_HISTOGRAM_CREATION).execute(db).await {
-            debug_error(Error::new(err).context("error finalizing histogram"));
-        }
-    }
-
-    pub async fn migrate(db: &sqlx::postgres::PgPool, histogram_ext: bool) -> Result<()> {
+    pub async fn migrate(db: &sqlx::postgres::PgPool) -> Result<()> {
         let mut conn = db.acquire().await?;
 
         // Install timescaledb extension
@@ -633,17 +429,6 @@ mod schema {
         } else {
             update_metadata(&mut conn, true, "version", BASE_SCHEMA_VERSION).await;
             update_metadata(&mut conn, true, "commit_hash", "").await;
-        }
-
-        // Run histogram schema migrations
-        if histogram_ext {
-            if must_run_migrations(&mut conn, HISTOGRAM_MIGRATIONS_TABLE, 1).await? {
-
-            }
-            let histogram_schema = include_str!("../sql/histogram_schema.sql")
-                .replace("SCHEMA_CATALOG", SCHEMA_CATALOG)
-                .replace("SCHEMA_DATA_HISTOGRAM", SCHEMA_DATA_HISTOGRAM);
-            run_migration(&mut conn, HISTOGRAM_MIGRATIONS_TABLE, 1, &histogram_schema).await?;
         }
 
         Ok(())

@@ -130,6 +130,7 @@ impl Config {
         })
     }
 
+    #[allow(dead_code)]
     pub fn has_storage_extension(&self, ext_name: &str) -> bool {
         self.storage_extensions.iter().any(|s| s == ext_name)
     }

@@ -114,8 +114,7 @@ impl StandaloneStorage {
         println!("Connected to {}", db_url);
 
         // Build storage
-        let connector = telemetry_standalone::Connector::new(db)
-            .with_ext_histogram_schema(config.has_storage_extension("histogram_schema"));
+        let connector = telemetry_standalone::Connector::new(db);
         connector
             .resume()
             .await
