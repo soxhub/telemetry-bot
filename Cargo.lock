@@ -2443,6 +2443,7 @@ dependencies = [
  "async-std",
  "chrono",
  "dashmap",
+ "futures 0.3.5",
  "lasso",
  "serde_json",
  "sqlx",

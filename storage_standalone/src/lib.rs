@@ -2,6 +2,7 @@ use anyhow::{Context, Error, Result};
 use async_std::sync::{Receiver, Sender};
 use chrono::prelude::*;
 use dashmap::DashMap;
+use futures::prelude::*;
 use lasso::{Spur, ThreadedRodeo};
 use sqlx::prelude::*;
 use std::collections::HashMap;
@@ -178,19 +179,13 @@ impl Connector {
             let insert_key = Arc::clone(&table_name);
             let insert_task = self.inserters.entry(insert_key).or_insert_with(move || {
                 let (tx, rx) = async_std::sync::channel(255);
-                async_std::task::spawn(receive_inserts(self.db.clone(), table_name, rx));
+                async_std::task::spawn(process_samples(self.db.clone(), table_name, rx));
                 tx
             });
             insert_task.send(rows).await;
         }
 
         (inserted, errors)
-    }
-
-    /// Tells the connector that we are done scraping and it should send any remaining samples
-    pub async fn finish_samples(&self) {
-        // Closes all of the channels
-        self.inserters.clear();
     }
 
     /// Ensure tables for the metric with the given name exist, and cache the table name
@@ -260,35 +255,58 @@ impl Connector {
     }
 }
 
+const MAX_BATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// A spawnable async task that recv rows from a channel and inserts them (batched) into the database.
-async fn receive_inserts(
+async fn process_samples(
     db: sqlx::postgres::PgPool,
     table_name: Arc<String>,
     rx: Receiver<Vec<SampleRow>>,
 ) {
-    let mut collected = Vec::new();
-    while let Ok(rows) = rx.recv().await {
-        if collected.is_empty() {
-            collected = rows;
-        } else {
-            collected.extend(rows);
+    let mut batch = Vec::new();
+    let mut next_rows = rx.recv().boxed().fuse();
+
+    'receive: loop {
+        // Wait up to 1 second to receive inserts
+        let mut did_timeout = false;
+        let mut timeout = async_std::task::sleep(MAX_BATCH_TIMEOUT).boxed().fuse();
+        futures::select! {
+            result = next_rows => match result {
+                // When rows are received, add them to the batch
+                Ok(rows) => {
+                    if batch.is_empty() {
+                        batch = rows;
+                    } else {
+                        batch.extend(rows);
+                    }
+
+                    // Reset our recv promise
+                    next_rows = rx.recv().boxed().fuse();
+                }
+
+                // When the channel closes, stop processing samples
+                Err(_) => break 'receive,
+            },
+
+            () = timeout => did_timeout = true,
         }
 
-        // If we've collected at least a 1000 rows, then
-        if collected.len() >= 1000 {
-            let inserts = std::mem::take(&mut collected);
-            do_insert(&db, &table_name, inserts).await;
+        // If we've waited for more than a second, or collected at least a 1000 rows
+        // then insert whatever rows we currently have collected.
+        if !batch.is_empty() && (did_timeout || batch.len() >= 1000) {
+            let inserts = std::mem::take(&mut batch);
+            insert_samples(&db, &table_name, inserts).await;
         }
     }
 
     // If there are any uninserted rows after the channel closes, insert them now
-    if !collected.is_empty() {
-        do_insert(&db, &table_name, collected).await;
+    if !batch.is_empty() {
+        insert_samples(&db, &table_name, batch).await;
     }
 }
 
 /// Inserts a set of samples into the specified data table
-async fn do_insert(db: &sqlx::postgres::PgPool, table_name: &str, rows: Vec<SampleRow>) {
+async fn insert_samples(db: &sqlx::postgres::PgPool, table_name: &str, rows: Vec<SampleRow>) {
     // Collect rows by column
     let count = rows.len();
     let mut times = Vec::with_capacity(count);

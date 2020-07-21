@@ -41,10 +41,6 @@ pub trait Storage: Send + Sync {
         sampleset: SampleSet<'_>,
         static_labels: &[(String, String)],
     ) -> (usize, Vec<Error>);
-
-    async fn finish(&self) -> Result<()> {
-        Ok(())
-    }
 }
 
 #[cfg(feature = "storage-remote-write")]
@@ -143,10 +139,5 @@ impl Storage for StandaloneStorage {
         self.connector
             .write_samples(default_timestamp, sampleset, static_labels)
             .await
-    }
-
-    async fn finish(&self) -> Result<()> {
-        self.connector.finish_samples().await;
-        Ok(())
     }
 }
