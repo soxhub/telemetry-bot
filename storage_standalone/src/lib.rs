@@ -1,6 +1,6 @@
 use anyhow::{Context, Error, Result};
+use async_std::sync::{Receiver, Sender};
 use chrono::prelude::*;
-use crossbeam::channel;
 use dashmap::DashMap;
 use lasso::{Spur, ThreadedRodeo};
 use sqlx::prelude::*;
@@ -42,7 +42,7 @@ pub struct Connector {
     metrics: DashMap<String, Arc<String>>,
 
     /// A map of metric table names to insert tasks (via a channel)
-    inserters: DashMap<Arc<String>, channel::Sender<Vec<SampleRow>>>,
+    inserters: DashMap<Arc<String>, Sender<Vec<SampleRow>>>,
 
     /// An interned map of label names to integer ids
     label_names: ThreadedRodeo<Spur>,
@@ -174,17 +174,14 @@ impl Connector {
         // Insert the data rows
         let mut inserted = 0;
         for (table_name, rows) in rows {
+            inserted += rows.len();
             let insert_key = Arc::clone(&table_name);
             let insert_task = self.inserters.entry(insert_key).or_insert_with(move || {
-                let (tx, rx) = channel::unbounded();
+                let (tx, rx) = async_std::sync::channel(255);
                 async_std::task::spawn(receive_inserts(self.db.clone(), table_name, rx));
                 tx
             });
-            let count = rows.len();
-            match insert_task.send(rows) {
-                Ok(_) => inserted += count,
-                Err(err) => errors.push(Error::new(err).context("error inserting histogram rows")),
-            }
+            insert_task.send(rows).await;
         }
 
         (inserted, errors)
@@ -196,6 +193,7 @@ impl Connector {
         self.inserters.clear();
     }
 
+    /// Ensure tables for the metric with the given name exist, and cache the table name
     async fn upsert_metric(&self, metric_name: &str) -> Result<Arc<String>> {
         let (table_name, finalize_metric): (String, bool) =
             sqlx::query_as(schema::UPSERT_METRIC_TABLE_NAME)
@@ -216,6 +214,7 @@ impl Connector {
         Ok(table_name)
     }
 
+    /// Ensure a series id for the set of label pairs exists, and cache the id
     async fn upsert_series(
         &self,
         metric: &str,
@@ -265,10 +264,10 @@ impl Connector {
 async fn receive_inserts(
     db: sqlx::postgres::PgPool,
     table_name: Arc<String>,
-    rx: channel::Receiver<Vec<SampleRow>>,
+    rx: Receiver<Vec<SampleRow>>,
 ) {
     let mut collected = Vec::new();
-    while let Ok(rows) = rx.recv() {
+    while let Ok(rows) = rx.recv().await {
         if collected.is_empty() {
             collected = rows;
         } else {
