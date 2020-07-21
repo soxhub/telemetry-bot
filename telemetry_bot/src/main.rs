@@ -153,7 +153,7 @@ async fn run(config: Config, shutdown: piper::Receiver<()>) -> Result<()> {
                 .into_par_stream()
                 .limit(config.scrape_concurrency as usize)
                 .for_each(move |target| {
-                    perform_scrape(
+                    scrape_target(
                         store,
                         config.scrape_timeout,
                         &config.scrape_labels,
@@ -182,7 +182,7 @@ async fn run(config: Config, shutdown: piper::Receiver<()>) -> Result<()> {
     Ok(())
 }
 
-async fn perform_scrape(
+async fn scrape_target(
     store: &'static dyn Storage,
     timeout: std::time::Duration,
     global_labels: &'static [(String, String)],
@@ -223,8 +223,33 @@ async fn perform_scrape(
                 .into_iter()
                 .filter(|d| d.timestamp.map(|t| t >= max_age).unwrap_or(true))
                 .collect::<Vec<_>>();
-            if !parsed.samples.is_empty() {
-                store.write(timestamp, parsed, &static_labels).await;
+            if parsed.samples.is_empty() {
+                DEBUG.drop_response(input.len());
+                return;
+            }
+
+            let total = parsed.samples.len();
+            let expected = parsed.samples.len();
+            let skipped = total - expected;
+            let (sent, errors) = store.write(timestamp, parsed, &static_labels).await;
+            if sent > 0 {
+                DEBUG.writes_succeeded(sent);
+            }
+            if skipped > 0 {
+                DEBUG.writes_skipped(skipped);
+            }
+            if !errors.is_empty() {
+                DEBUG.writes_failed(expected - sent);
+                let mut errors = errors;
+                let err = if errors.len() > 1 {
+                    errors
+                        .swap_remove(0)
+                        .context("a write failed with an error")
+                        .context(format!("write failed with {} errors", errors.len()))
+                } else {
+                    errors.swap_remove(0).context("write failed")
+                };
+                debug_error(err);
             }
             DEBUG.drop_response(input.len());
         }

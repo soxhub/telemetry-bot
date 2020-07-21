@@ -1,7 +1,5 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Error, Result};
 use async_trait::async_trait;
-use telemetry_core::debug::DEBUG;
-use telemetry_core::error::debug_error;
 use telemetry_core::parser::SampleSet;
 
 use crate::config::Config;
@@ -42,7 +40,7 @@ pub trait Storage: Send + Sync {
         default_timestamp: i64,
         sampleset: SampleSet<'_>,
         static_labels: &[(String, String)],
-    );
+    ) -> (usize, Vec<Error>);
 }
 
 #[cfg(feature = "storage-remote-write")]
@@ -69,28 +67,19 @@ impl Storage for RemoteWriteStorage {
         default_timestamp: i64,
         sampleset: SampleSet<'_>,
         static_labels: &[(String, String)],
-    ) {
-        let expected = sampleset.samples.len();
-        let finished = telemetry_remote_write::write_samples(
+    ) -> (usize, Vec<Error>) {
+        let result = telemetry_remote_write::write_samples(
             &self.write_url,
             default_timestamp,
             sampleset.samples,
             static_labels,
-        );
-        match finished.await {
-            Ok(sent) => {
-                let skipped = expected - sent;
-                if sent > 0 {
-                    DEBUG.writes_succeeded(sent);
-                }
-                if skipped > 0 {
-                    DEBUG.writes_skipped(skipped);
-                }
-            }
-            Err(err) => {
-                DEBUG.writes_failed(expected);
-                debug_error(err.context("write failed"));
-            }
+        )
+        .await;
+
+        // Wrap the single result in an error
+        match result {
+            Ok(sent) => (sent, vec![]),
+            Err(err) => (0, vec![err]),
         }
     }
 }
@@ -146,11 +135,9 @@ impl Storage for StandaloneStorage {
         default_timestamp: i64,
         sampleset: SampleSet<'_>,
         static_labels: &[(String, String)],
-    ) {
-        async_std::task::spawn(self.connector.write_samples(
-            default_timestamp,
-            sampleset.samples,
-            static_labels.to_vec(),
-        ));
+    ) -> (usize, Vec<Error>) {
+        self.connector
+            .write_samples(default_timestamp, sampleset, static_labels)
+            .await
     }
 }

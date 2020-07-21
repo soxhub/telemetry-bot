@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use telemetry_core::debug::DEBUG;
 use telemetry_core::error::debug_error;
-use telemetry_core::parser::Sample;
+use telemetry_core::parser::SampleSet;
 
 #[repr(transparent)]
 #[derive(Copy, Clone, Eq, PartialEq, Hash)]
@@ -75,7 +75,7 @@ impl Connector {
         Ok(())
     }
 
-    fn build_series_key(&self, label_pairs: &Vec<(String, String)>) -> SeriesKey {
+    fn build_series_key(&self, label_pairs: &Vec<(&str, &str)>) -> SeriesKey {
         let mut key_builder = encoding::U32ZigZagEncoder::sized_for(label_pairs.len() * 2);
         debug_assert_eq!(
             std::mem::size_of::<LabelNameKey>(),
@@ -110,17 +110,17 @@ impl Connector {
     pub async fn write_samples(
         &self,
         default_timestamp: i64,
-        scraped_samples: Vec<Sample>,
-        static_labels: Vec<(String, String)>,
+        scraped: SampleSet<'_>,
+        static_labels: &[(String, String)],
     ) -> (usize, Vec<Error>) {
         let mut errors = Vec::new();
 
         // Collect samples as rows per table
         let mut rows: HashMap<Arc<String>, Vec<SampleRow>> =
-            HashMap::with_capacity(scraped_samples.len());
-        for sample in scraped_samples {
+            HashMap::with_capacity(scraped.samples.len());
+        for sample in scraped.samples {
             // Get the normal metric table name
-            let metric_table = if let Some(table_name) = self.metrics.get(&sample.name) {
+            let metric_table = if let Some(table_name) = self.metrics.get(sample.name) {
                 Arc::clone(&table_name)
             } else {
                 match self.upsert_metric(&sample.name).await {
@@ -135,9 +135,13 @@ impl Connector {
             // Collect dynamic and static labels
             let num_labels = 1 + static_labels.len() + sample.labels.len();
             let mut label_pairs = Vec::with_capacity(num_labels);
-            label_pairs.push(("__name__".to_owned(), sample.name.clone()));
-            label_pairs.extend(static_labels.clone());
-            label_pairs.extend(sample.labels);
+            label_pairs.push(("__name__", sample.name));
+            for (name, value) in static_labels {
+                label_pairs.push((&name, &value));
+            }
+            for (name, value) in &sample.labels {
+                label_pairs.push((&name, &value));
+            }
 
             // Labels must be sorted by name alphabetically
             label_pairs.sort_by(|a, b| a.0.cmp(&b.0));
@@ -149,7 +153,7 @@ impl Connector {
             let timestamp = sample.timestamp.unwrap_or(default_timestamp);
             let timestamp = DateTime::from_utc(NaiveDateTime::from_timestamp(timestamp, 0), Utc);
             if let Some(series_id) = self.series.get(&series_key) {
-                let row = (timestamp, sample.value, *series_id);
+                let row = (timestamp, sample.value.to_f64(), *series_id);
                 rows.entry(metric_table).or_default().push(row);
             } else {
                 match self
@@ -157,7 +161,7 @@ impl Connector {
                     .await
                 {
                     Ok(series_id) => {
-                        let row = (timestamp, sample.value, series_id);
+                        let row = (timestamp, sample.value.to_f64(), series_id);
                         rows.entry(metric_table).or_default().push(row);
                     }
                     Err(err) => {
@@ -186,24 +190,11 @@ impl Connector {
 
     /// Ensure tables for the metric with the given name exist, and cache the table name
     async fn upsert_metric(&self, metric_name: &str) -> Result<Arc<String>> {
-        // Acquire a connection (retry once after timeout)
-        let mut conn = match self.db.acquire().await {
-            Err(sqlx::Error::PoolTimedOut(..)) => self.db.acquire().await,
-            Err(err) => Err(err),
-            Ok(conn) => Ok(conn),
-        }
-        .context("error upserting metric")?;
-
-        // Perform the upsert
         let (table_name, finalize_metric): (String, bool) =
             sqlx::query_as(schema::UPSERT_METRIC_TABLE_NAME)
                 .bind(metric_name)
-                .fetch_one(&mut conn)
-                .await
-                .context("error upserting metric")?;
-
-        // Ensure the connection is released
-        std::mem::drop(conn);
+                .fetch_one(&self.db)
+                .await?;
 
         // Cache the table name for the metric
         let table_name = Arc::new(table_name);
@@ -223,17 +214,11 @@ impl Connector {
         &self,
         metric: &str,
         series_key: SeriesKey,
-        label_pairs: &[(String, String)],
+        label_pairs: &[(&str, &str)],
     ) -> Result<i32> {
         // Prepare labels and values
-        let labels = label_pairs
-            .iter()
-            .map(|(a, _)| a.as_str())
-            .collect::<Vec<_>>();
-        let values = label_pairs
-            .iter()
-            .map(|(_, b)| b.as_str())
-            .collect::<Vec<_>>();
+        let labels = label_pairs.iter().map(|(a, _)| *a).collect::<Vec<_>>();
+        let values = label_pairs.iter().map(|(_, b)| *b).collect::<Vec<_>>();
 
         // Acquire a connection (retry once after timeout)
         let mut conn = match self.db.acquire().await {
@@ -311,27 +296,17 @@ async fn process_samples(
         // If we've waited for more than a second, or collected at least a 1000 rows
         // then insert whatever rows we currently have collected.
         if !batch.is_empty() && (did_timeout || batch.len() >= 1000) {
-            let batch_size = batch.len();
             let inserts = std::mem::take(&mut batch);
-            match insert_samples(&db, &table_name, inserts).await {
-                Ok(rows) => DEBUG.writes_succeeded(rows as usize),
-                Err(err) => {
-                    DEBUG.writes_failed(batch_size);
-                    debug_error(err.context("error inserting samples"));
-                }
+            if let Err(err) = insert_samples(&db, &table_name, inserts).await {
+                debug_error(err.context("error inserting samples"));
             }
         }
     }
 
     // If there are any uninserted rows after the channel closes, insert them now
     if !batch.is_empty() {
-        let batch_size = batch.len();
-        match insert_samples(&db, &table_name, batch).await {
-            Ok(rows) => DEBUG.writes_succeeded(rows as usize),
-            Err(err) => {
-                DEBUG.writes_failed(batch_size);
-                debug_error(err.context("error inserting samples"));
-            }
+        if let Err(err) = insert_samples(&db, &table_name, batch).await {
+            debug_error(err.context("error inserting samples"));
         }
     }
 }
@@ -341,7 +316,7 @@ async fn insert_samples(
     db: &sqlx::postgres::PgPool,
     table_name: &str,
     rows: Vec<SampleRow>,
-) -> Result<u64> {
+) -> Result<()> {
     // Collect rows by column
     let count = rows.len();
     let mut times = Vec::with_capacity(count);
@@ -355,7 +330,7 @@ async fn insert_samples(
 
     // Wait until a database connection is available
     let mut conn = wait_for_connection(db).await?;
-    let inserted = sqlx::query(&format!(
+    sqlx::query(&format!(
         r#"
             INSERT INTO {schema_name}.{table_name} ("time", "value", "series_id")
             SELECT * FROM UNNEST('{timestamp_arr_str}'::timestamptz[], $1::float8[], $2::int4[])
@@ -377,7 +352,7 @@ async fn insert_samples(
     .execute(&mut conn)
     .await?;
 
-    Ok(inserted)
+    Ok(())
 }
 
 async fn wait_for_connection(
