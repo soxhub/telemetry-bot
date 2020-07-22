@@ -245,7 +245,7 @@ async fn scrape_target(
                     errors
                         .swap_remove(0)
                         .context("a write failed with an error")
-                        .context(format!("write failed with {} errors", errors.len()))
+                        .context(format!("write failed with {} errors", errors.len() + 1))
                 } else {
                     errors.swap_remove(0).context("write failed")
                 };
