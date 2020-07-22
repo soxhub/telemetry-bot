@@ -15,6 +15,7 @@ pub struct DebugMetrics {
     write_count: AtomicUsize,
     write_errors: AtomicUsize,
     write_skips: AtomicUsize,
+    query_count: AtomicUsize,
     targets_active: AtomicUsize,
     targets_peak: AtomicUsize,
     response_bytes_used: AtomicUsize,
@@ -36,6 +37,7 @@ impl DebugMetrics {
             write_count: AtomicUsize::new(0),
             write_errors: AtomicUsize::new(0),
             write_skips: AtomicUsize::new(0),
+            query_count: AtomicUsize::new(0),
             targets_active: AtomicUsize::new(0),
             targets_peak: AtomicUsize::new(0),
             response_bytes_used: AtomicUsize::new(0),
@@ -100,6 +102,10 @@ impl DebugMetrics {
         self.write_skips.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn finished_query(&self) {
+        self.query_count.fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn allocate_target(&self) {
         let active = self.targets_active.fetch_add(1, Ordering::SeqCst);
         // TODO: Use `fetch_max` when it is stable
@@ -160,8 +166,9 @@ impl DebugMetrics {
         let write_count = self.write_count.swap(0, Ordering::Relaxed);
         let write_errors = self.write_errors.swap(0, Ordering::Relaxed);
         let write_skips = self.write_skips.swap(0, Ordering::Relaxed);
+        let sql_queries = self.query_count.swap(0, Ordering::Relaxed);
         println!(
-            "Debug: pods {} (used {}, peak {}) | polling (errors {}, resets {}) | scraped {} (errors {}, timeouts {}, disconnects {}) | writes {} (errors {}, skipped {}) | series {} (rss {}) | response bytes (used {}, peak {})",
+            "Debug: pods {} (used {}, peak {}) | polling (errors {}, resets {}) | scraped {} (errors {}, timeouts {}, disconnects {}) | writes {} (errors {}, skipped {}) | series {} (rss {}) | response bytes (used {}, peak {}) | sql (queries {})",
             pod_count,
             targets_active,
             targets_peak,
@@ -178,6 +185,7 @@ impl DebugMetrics {
             series_bytes,
             resp_bytes_used,
             resp_bytes_peak,
+            sql_queries,
         );
     }
 }

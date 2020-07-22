@@ -7,6 +7,7 @@ use lasso::{Spur, ThreadedRodeo};
 use sqlx::prelude::*;
 use std::collections::HashMap;
 use std::convert::TryInto;
+use std::fmt::Write;
 use std::sync::Arc;
 
 use telemetry_core::debug::DEBUG;
@@ -22,7 +23,7 @@ struct LabelNameKey(Spur);
 struct LabelValueKey(Spur);
 
 #[repr(transparent)]
-#[derive(Eq, PartialEq, Hash)]
+#[derive(Clone, Eq, PartialEq, Hash)]
 struct SeriesKey(Box<[u8]>);
 
 impl SeriesKey {
@@ -118,7 +119,9 @@ impl Connector {
         // Collect samples as rows per table
         let mut rows: HashMap<Arc<String>, Vec<SampleRow>> =
             HashMap::with_capacity(scraped.samples.len());
-        for sample in scraped.samples {
+        let mut missing_series = Vec::new();
+        let mut incomplete_samples = Vec::new();
+        for sample in &scraped.samples {
             // Get the normal metric table name
             let metric_table = if let Some(table_name) = self.metrics.get(sample.name) {
                 Arc::clone(&table_name)
@@ -149,25 +152,32 @@ impl Connector {
             // Create a comparable + hashable key for the series
             let series_key = self.build_series_key(&label_pairs);
 
-            // Find the series id and save the data row to be inserted
+            // Find already known series ids and save the data row to be inserted
             let timestamp = sample.timestamp.unwrap_or(default_timestamp);
             let timestamp = DateTime::from_utc(NaiveDateTime::from_timestamp(timestamp, 0), Utc);
+            let value = sample.value.to_f64();
             if let Some(series_id) = self.series.get(&series_key) {
-                let row = (timestamp, sample.value.to_f64(), *series_id);
+                let row = (timestamp, value, *series_id);
                 rows.entry(metric_table).or_default().push(row);
             } else {
-                match self
-                    .upsert_series(&sample.name, series_key, &label_pairs)
-                    .await
-                {
-                    Ok(series_id) => {
-                        let row = (timestamp, sample.value.to_f64(), series_id);
-                        rows.entry(metric_table).or_default().push(row);
+                missing_series.push((sample.name, series_key, label_pairs));
+                incomplete_samples.push((metric_table, timestamp, value));
+            }
+        }
+
+        // Upsert any missing series
+        if !missing_series.is_empty() {
+            match self.upsert_series_batch(missing_series).await {
+                Ok(series_ids) => {
+                    for (series_id, (table, timestamp, value)) in
+                        series_ids.into_iter().zip(incomplete_samples)
+                    {
+                        let row = (timestamp, value, series_id);
+                        rows.entry(table).or_default().push(row);
                     }
-                    Err(err) => {
-                        errors.push(err);
-                        continue;
-                    }
+                }
+                Err(err) => {
+                    errors.push(err);
                 }
             }
         }
@@ -195,6 +205,7 @@ impl Connector {
                 .bind(metric_name)
                 .fetch_one(&self.db)
                 .await?;
+        DEBUG.finished_query();
 
         // Cache the table name for the metric
         let table_name = Arc::new(table_name);
@@ -209,6 +220,104 @@ impl Connector {
         Ok(table_name)
     }
 
+    /// Ensure series ids exist for multiple sets of label pairs, and cache the ids
+    async fn upsert_series_batch(
+        &self,
+        mut series_data: Vec<(&str, SeriesKey, Vec<(&str, &str)>)>,
+    ) -> Result<Vec<i32>> {
+        const MAX_STMT_LENGTH: usize =
+            schema::UPSERT_SERIES_ID_FOR_LABELS.len() + " UNION ALL ".len() + 3;
+        let prefix = format!(
+            "SELECT series_id FROM {}.get_or_create_series_id_for_kv_array",
+            schema::SCHEMA_CATALOG
+        );
+
+        // Upsert chunks of max 1000 series at a time.
+        //
+        // We must choose some value that is less than 1/3rd of int16 max (~32k),
+        // because a postgres query can't bind more than that many variables.
+        let mut results = Vec::with_capacity(series_data.len());
+        let take_chunk = |vec: &mut Vec<_>| -> Option<Vec<_>> {
+            if vec.is_empty() {
+                None
+            } else if vec.len() > 1000 {
+                Some(vec.split_off(vec.len() - 1000))
+            } else {
+                Some(std::mem::take(vec))
+            }
+        };
+        while let Some(chunk) = take_chunk(&mut series_data) {
+            // Format the query string
+            let mut nth: u32 = 1;
+            let mut stmt = String::with_capacity(chunk.len() * MAX_STMT_LENGTH);
+            for _ in 0..chunk.len() {
+                if nth > 1 {
+                    write!(&mut stmt, "{}(${},${},${})", prefix, nth, nth + 1, nth + 2).ok();
+                } else {
+                    #[rustfmt::skip]
+                    write!(&mut stmt, " UNION ALL {}(${},${},${})", prefix, nth, nth + 1, nth + 2).ok();
+                }
+                nth += 3;
+            }
+
+            // Bind all arguments
+            let mut stmt = sqlx::query_as(&stmt);
+            for (metric, _, label_pairs) in &chunk {
+                let labels = label_pairs.iter().map(|(a, _)| *a).collect::<Vec<_>>();
+                let values = label_pairs.iter().map(|(_, b)| *b).collect::<Vec<_>>();
+                stmt = stmt.bind(metric).bind(labels).bind(values);
+            }
+
+            // Acquire a connection (retry once after timeout)
+            let mut conn = match self.db.acquire().await {
+                Err(sqlx::Error::PoolTimedOut(..)) => self.db.acquire().await,
+                Err(err) => Err(err),
+                Ok(conn) => Ok(conn),
+            }
+            .context("error upserting series (batch)")?;
+
+            // Perform the upsert
+            let rows: Vec<(i64,)> = stmt
+                .fetch_all(&mut conn)
+                .await
+                .context("error upserting series (batch)")?;
+            DEBUG.finished_query();
+
+            // Ensure the connection is released
+            std::mem::drop(conn);
+
+            // If the number of results is incorrect, return an error
+            if rows.len() != chunk.len() {
+                return Err(anyhow::format_err!(
+                    "error upserting series; results != expected ({} != {})",
+                    rows.len(),
+                    chunk.len()
+                ));
+            }
+
+            // Save the ids to the cache
+            for ((series_id,), (_, series_key, _)) in rows.into_iter().zip(chunk) {
+                // While the `prom_data_series.*` tables use an int8,
+                // the `prom_data` table uses an int4.
+                let series_id = series_id
+                    .try_into()
+                    .context("invalid series id (too large)")?;
+
+                // Cache the id for the series
+                let size_bytes = series_key.size_of();
+                if self.series.insert(series_key, series_id).is_none() {
+                    DEBUG.series_added(size_bytes);
+                }
+
+                // Add it to the results
+                results.push(series_id);
+            }
+        }
+
+        Ok(results)
+    }
+
+    /*
     /// Ensure a series id for the set of label pairs exists, and cache the id
     async fn upsert_series(
         &self,
@@ -237,6 +346,7 @@ impl Connector {
                 .fetch_one(&mut conn)
                 .await
                 .context("error upserting series")?;
+        DEBUG.finished_query();
 
         // Ensure the connection is released
         std::mem::drop(conn);
@@ -255,6 +365,7 @@ impl Connector {
 
         Ok(series_id)
     }
+    */
 }
 
 const MAX_BATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -351,6 +462,7 @@ async fn insert_samples(
     .bind(&series_ids)
     .execute(&mut conn)
     .await?;
+    DEBUG.finished_query();
 
     Ok(())
 }
