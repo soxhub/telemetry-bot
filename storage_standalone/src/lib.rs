@@ -233,12 +233,17 @@ impl Connector {
         &self,
         mut series_data: Vec<(&str, SeriesKey, Vec<(&str, &str)>)>,
     ) -> Result<Vec<i32>> {
-        const MAX_STMT_LENGTH: usize =
-            schema::UPSERT_SERIES_ID_FOR_LABELS.len() + " UNION ALL ".len() + 3;
-        let prefix = format!(
-            "SELECT series_id FROM {}.get_or_create_series_id_for_kv_array",
+        let sql_func = format!(
+            "{}.get_or_create_series_id_for_kv_array",
             schema::SCHEMA_CATALOG
         );
+        #[rustfmt::skip]
+        let per_row_length: usize =
+            sql_func.len()
+            + " UNION ALL SELECT series_id, ___ FROM".len()
+            + "($___,$___,$___)".len()
+            + 2 // enclosing paranthesis
+            ;
 
         // Upsert chunks of max 1000 series at a time.
         //
@@ -257,14 +262,14 @@ impl Connector {
         while let Some(chunk) = take_chunk(&mut series_data) {
             // Format the query string
             let mut nth: u32 = 1;
-            let mut stmt = String::with_capacity(chunk.len() * MAX_STMT_LENGTH);
-            for _ in 0..chunk.len() {
+            let mut stmt = String::with_capacity(chunk.len() * per_row_length);
+            for order in 0..chunk.len() {
                 if nth > 1 {
-                    write!(&mut stmt, "{}(${},${},${})", prefix, nth, nth + 1, nth + 2).ok();
-                } else {
-                    #[rustfmt::skip]
-                    write!(&mut stmt, " UNION ALL {}(${},${},${})", prefix, nth, nth + 1, nth + 2).ok();
+                    stmt.write_str(" UNION ALL ").ok();
                 }
+
+                #[rustfmt::skip]
+                write!(&mut stmt, "(SELECT series_id, {} FROM {}(${},${},${}))", order, sql_func, nth, nth + 1, nth + 2).ok();
                 nth += 3;
             }
 
