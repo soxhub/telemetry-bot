@@ -1,7 +1,9 @@
 use anyhow::{Context, Error, Result};
-use async_std::sync::{Receiver, Sender};
 use chrono::prelude::*;
 use dashmap::DashMap;
+use futures::channel::mpsc::{
+    self as channel, UnboundedReceiver as Receiver, UnboundedSender as Sender,
+};
 use futures::prelude::*;
 use lasso::{Spur, ThreadedRodeo};
 use sqlx::prelude::*;
@@ -185,12 +187,12 @@ impl Connector {
         // Insert the data rows
         let mut inserted = 0;
         for (table_name, rows) in rows {
-            inserted += rows.len();
+            let insert_count = rows.len();
             let insert_key = Arc::clone(&table_name);
             let insert_task = if let Some(tx) = self.inserters.get(&insert_key) {
                 tx.value().clone()
             } else {
-                let (tx, rx) = async_std::sync::channel(512);
+                let (tx, rx) = channel::unbounded();
 
                 // Safety: We _always_ spawn an insert task if we've inserted a value to consume any
                 //         messages that we will send, even if another task eventually replaces ours.
@@ -200,7 +202,10 @@ impl Connector {
                 async_std::task::spawn(process_samples(self.db.clone(), table_name, rx));
                 tx
             };
-            insert_task.send(rows).await;
+            match insert_task.unbounded_send(rows) {
+                Ok(_) => inserted += insert_count,
+                Err(err) => errors.push(Error::new(err)),
+            }
         }
 
         (inserted, errors)
@@ -338,10 +343,10 @@ const MAX_BATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5)
 async fn process_samples(
     db: sqlx::postgres::PgPool,
     table_name: Arc<String>,
-    rx: Receiver<Vec<SampleRow>>,
+    mut rx: Receiver<Vec<SampleRow>>,
 ) {
     let mut batch = Vec::new();
-    let mut next_rows = rx.recv().boxed().fuse();
+    let mut next_rows = rx.next();
 
     'receive: loop {
         // Wait up to 1 second to receive inserts
@@ -350,7 +355,7 @@ async fn process_samples(
         futures::select! {
             result = next_rows => match result {
                 // When rows are received, add them to the batch
-                Ok(rows) => {
+                Some(rows) => {
                     if batch.is_empty() {
                         batch = rows;
                     } else {
@@ -358,11 +363,11 @@ async fn process_samples(
                     }
 
                     // Reset our recv promise
-                    next_rows = rx.recv().boxed().fuse();
+                    next_rows = rx.next();
                 }
 
                 // When the channel closes, stop processing samples
-                Err(_) => break 'receive,
+                None => break 'receive,
             },
 
             () = timeout => did_timeout = true,
