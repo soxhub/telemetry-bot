@@ -440,7 +440,12 @@ async fn insert_samples(
     }
 
     // Wait until a database connection is available
-    let mut conn = wait_for_connection(db).await?;
+    let mut conn = match db.acquire().await {
+        Err(sqlx::Error::PoolTimedOut(..)) => db.acquire().await,
+        Err(err) => Err(err),
+        Ok(conn) => Ok(conn),
+    }
+    .context("error inserting samples")?;
     sqlx::query(&format!(
         r#"
             INSERT INTO {schema_name}.{table_name} ("time", "value", "series_id")
@@ -461,27 +466,11 @@ async fn insert_samples(
     .bind(&values)
     .bind(&series_ids)
     .execute(&mut conn)
-    .await?;
+    .await
+    .context("error inserting samples")?;
     DEBUG.finished_query();
 
     Ok(())
-}
-
-async fn wait_for_connection(
-    db: &sqlx::postgres::PgPool,
-) -> sqlx::Result<sqlx::pool::PoolConnection<sqlx::postgres::PgConnection>> {
-    const MAX_RETRIES: usize = 10;
-    let mut attempts = 1;
-    loop {
-        match db.acquire().await {
-            Err(sqlx::Error::PoolTimedOut(..)) if attempts < MAX_RETRIES => {
-                attempts += 1;
-                continue;
-            }
-            Err(err) => return Err(err),
-            Ok(conn) => return Ok(conn),
-        }
-    }
 }
 
 #[rustfmt::skip]
