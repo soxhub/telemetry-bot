@@ -318,7 +318,7 @@ impl Connector {
 
                 // Cache the id for the series
                 let size_bytes = series_key.size_of();
-                if self.series.insert(series_key, series_id) {
+                if !self.series.insert(series_key, series_id) {
                     DEBUG.series_added(size_bytes);
                 }
 
