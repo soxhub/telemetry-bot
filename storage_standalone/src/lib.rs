@@ -212,7 +212,8 @@ impl Connector {
             sqlx::query_as(schema::UPSERT_METRIC_TABLE_NAME)
                 .bind(metric_name)
                 .fetch_one(&self.db)
-                .await?;
+                .await
+                .context("error upserting metric")?;
         DEBUG.finished_query();
 
         // Cache the table name for the metric
@@ -287,13 +288,13 @@ impl Connector {
                 Err(err) => Err(err),
                 Ok(conn) => Ok(conn),
             }
-            .context("error upserting series (batch)")?;
+            .context("error upserting series")?;
 
             // Perform the upsert
             let rows: Vec<(i64,)> = stmt
                 .fetch_all(&mut conn)
                 .await
-                .context("error upserting series (batch)")?;
+                .context("error upserting series")?;
             DEBUG.finished_query();
 
             // Ensure the connection is released
@@ -329,56 +330,6 @@ impl Connector {
 
         Ok(results)
     }
-
-    /*
-    /// Ensure a series id for the set of label pairs exists, and cache the id
-    async fn upsert_series(
-        &self,
-        metric: &str,
-        series_key: SeriesKey,
-        label_pairs: &[(&str, &str)],
-    ) -> Result<i32> {
-        // Prepare labels and values
-        let labels = label_pairs.iter().map(|(a, _)| *a).collect::<Vec<_>>();
-        let values = label_pairs.iter().map(|(_, b)| *b).collect::<Vec<_>>();
-
-        // Acquire a connection (retry once after timeout)
-        let mut conn = match self.db.acquire().await {
-            Err(sqlx::Error::PoolTimedOut(..)) => self.db.acquire().await,
-            Err(err) => Err(err),
-            Ok(conn) => Ok(conn),
-        }
-        .context("error upserting series")?;
-
-        // Perform the upsert
-        let (_table_name, series_id): (String, i64) =
-            sqlx::query_as(schema::UPSERT_SERIES_ID_FOR_LABELS)
-                .bind(metric)
-                .bind(&labels)
-                .bind(&values)
-                .fetch_one(&mut conn)
-                .await
-                .context("error upserting series")?;
-        DEBUG.finished_query();
-
-        // Ensure the connection is released
-        std::mem::drop(conn);
-
-        // While the `prom_data_series.*` tables use an int8,
-        // the `prom_data` table uses an int4.
-        let series_id = series_id
-            .try_into()
-            .context("invalid series id (too large)")?;
-
-        // Cache the id for the series
-        let size_bytes = series_key.size_of();
-        if self.series.insert(series_key, series_id).is_none() {
-            DEBUG.series_added(size_bytes);
-        }
-
-        Ok(series_id)
-    }
-    */
 }
 
 const MAX_BATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
