@@ -218,6 +218,7 @@ async fn scrape_target(
 
             // Write the samples to the backing storage
             let mut parsed = parser::parse(&input);
+            let total = parsed.samples.len();
             parsed.samples = parsed
                 .samples
                 .into_iter()
@@ -228,7 +229,6 @@ async fn scrape_target(
                 return;
             }
 
-            let total = parsed.samples.len();
             let expected = parsed.samples.len();
             let skipped = total - expected;
             let (sent, errors) = store.write(timestamp, parsed, &static_labels).await;
