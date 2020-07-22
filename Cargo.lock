@@ -609,6 +609,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dashmap"
+version = "4.0.0-rc6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "308a6703be2d759cb5fb7b80a23547fe73a8d5ebf70d3a4ca7f0ef4c0bfc2265"
+dependencies = [
+ "once_cell",
+]
+
+[[package]]
 name = "data-encoding"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1245,7 +1254,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c41891993e97eabeaa1dce4596ad4fb469931f9092ce07b34acfc638c101a02f"
 dependencies = [
  "ahash 0.4.3",
- "dashmap",
+ "dashmap 3.11.7",
  "hashbrown",
 ]
 
@@ -2442,7 +2451,7 @@ dependencies = [
  "anyhow",
  "async-std",
  "chrono",
- "dashmap",
+ "dashmap 4.0.0-rc6",
  "futures 0.3.5",
  "lasso",
  "serde_json",

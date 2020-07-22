@@ -187,11 +187,19 @@ impl Connector {
         for (table_name, rows) in rows {
             inserted += rows.len();
             let insert_key = Arc::clone(&table_name);
-            let insert_task = self.inserters.entry(insert_key).or_insert_with(move || {
-                let (tx, rx) = async_std::sync::channel(1024);
+            let insert_task = if let Some(tx) = self.inserters.get(&insert_key) {
+                tx.value().clone()
+            } else {
+                let (tx, rx) = async_std::sync::channel(512);
+
+                // Safety: We _always_ spawn an insert task if we've inserted a value to consume any
+                //         messages that we will send, even if another task eventually replaces ours.
+                //
+                //         Prefer to insert into the map first to attept to reduce that type of cache miss.
+                self.inserters.insert(insert_key, tx.clone());
                 async_std::task::spawn(process_samples(self.db.clone(), table_name, rx));
                 tx
-            });
+            };
             insert_task.send(rows).await;
         }
 
@@ -305,7 +313,7 @@ impl Connector {
 
                 // Cache the id for the series
                 let size_bytes = series_key.size_of();
-                if self.series.insert(series_key, series_id).is_none() {
+                if self.series.insert(series_key, series_id) {
                     DEBUG.series_added(size_bytes);
                 }
 
