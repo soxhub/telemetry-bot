@@ -113,6 +113,8 @@ impl StandaloneStorage {
         let db = sqlx::postgres::PgPool::builder()
             .min_size(db_min_conn as u32)
             .max_size(db_max_conn as u32)
+            .max_lifetime(std::time::Duration::from_secs(60 * 30))
+            .idle_timeout(std::time::Duration::from_secs(60 * 5).max(config.scrape_interval * 5))
             .connect_timeout(config.scrape_timeout.min(config.scrape_interval))
             .build(&db_url)
             .await
