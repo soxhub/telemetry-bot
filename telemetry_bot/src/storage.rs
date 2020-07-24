@@ -107,12 +107,13 @@ impl StandaloneStorage {
         let db_min_conn = num_cpus::get()
             .max(1)
             .min(config.scrape_concurrency as usize);
-        let db_max_conn = config.scrape_concurrency;
+        let db_max_conn = config.scrape_concurrency * 2;
 
         println!("Connecting to database...");
         let db = sqlx::postgres::PgPool::builder()
             .min_size(db_min_conn as u32)
             .max_size(db_max_conn as u32)
+            .connect_timeout(config.scrape_timeout.min(config.scrape_interval))
             .build(&db_url)
             .await
             .context("error connecting to timescaledb")?;
