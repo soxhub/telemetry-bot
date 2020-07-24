@@ -1,10 +1,6 @@
 use anyhow::{Context, Error, Result};
 use chrono::prelude::*;
 use dashmap::DashMap;
-use futures::channel::mpsc::{
-    self as channel, UnboundedReceiver as Receiver, UnboundedSender as Sender,
-};
-use futures::prelude::*;
 use lasso::{Spur, ThreadedRodeo};
 use sqlx::prelude::*;
 use std::collections::HashMap;
@@ -13,7 +9,6 @@ use std::fmt::Write;
 use std::sync::Arc;
 
 use telemetry_core::debug::DEBUG;
-use telemetry_core::error::debug_error;
 use telemetry_core::parser::SampleSet;
 
 #[repr(transparent)]
@@ -45,9 +40,6 @@ pub struct Connector {
     /// A map of metric name to metric table name
     metrics: DashMap<String, Arc<String>>,
 
-    /// A map of metric table names to insert tasks (via a channel)
-    inserters: DashMap<Arc<String>, Sender<Vec<SampleRow>>>,
-
     /// An interned map of label names to integer ids
     label_names: ThreadedRodeo<Spur>,
 
@@ -59,7 +51,6 @@ impl Connector {
     pub fn new(db: sqlx::postgres::PgPool) -> Self {
         Self {
             db,
-            inserters: DashMap::new(),
             series: DashMap::new(),
             metrics: DashMap::new(),
             label_names: ThreadedRodeo::new(),
@@ -188,23 +179,9 @@ impl Connector {
         let mut inserted = 0;
         for (table_name, rows) in rows {
             let insert_count = rows.len();
-            let insert_key = Arc::clone(&table_name);
-            let insert_task = if let Some(tx) = self.inserters.get(&insert_key) {
-                tx.value().clone()
-            } else {
-                let (tx, rx) = channel::unbounded();
-
-                // Safety: We _always_ spawn an insert task if we've inserted a value to consume any
-                //         messages that we will send, even if another task eventually replaces ours.
-                //
-                //         Prefer to insert into the map first to attept to reduce that type of cache miss.
-                self.inserters.insert(insert_key, tx.clone());
-                async_std::task::spawn(process_samples(self.db.clone(), table_name, rx));
-                tx
-            };
-            match insert_task.unbounded_send(rows) {
+            match insert_samples(&self.db, &table_name, rows).await {
                 Ok(_) => inserted += insert_count,
-                Err(err) => errors.push(Error::new(err)),
+                Err(err) => errors.push(err),
             }
         }
 
@@ -337,60 +314,6 @@ impl Connector {
     }
 }
 
-const MAX_BATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
-/// A spawnable async task that recv rows from a channel and inserts them (batched) into the database.
-async fn process_samples(
-    db: sqlx::postgres::PgPool,
-    table_name: Arc<String>,
-    mut rx: Receiver<Vec<SampleRow>>,
-) {
-    let mut batch = Vec::new();
-    let mut next_rows = rx.next();
-
-    'receive: loop {
-        // Wait up to 1 second to receive inserts
-        let mut did_timeout = false;
-        let mut timeout = async_std::task::sleep(MAX_BATCH_TIMEOUT).boxed().fuse();
-        futures::select! {
-            result = next_rows => match result {
-                // When rows are received, add them to the batch
-                Some(rows) => {
-                    if batch.is_empty() {
-                        batch = rows;
-                    } else {
-                        batch.extend(rows);
-                    }
-
-                    // Reset our recv promise
-                    next_rows = rx.next();
-                }
-
-                // When the channel closes, stop processing samples
-                None => break 'receive,
-            },
-
-            () = timeout => did_timeout = true,
-        }
-
-        // If we've waited for more than a second, or collected at least a 1000 rows
-        // then insert whatever rows we currently have collected.
-        if !batch.is_empty() && (did_timeout || batch.len() >= 1000) {
-            let inserts = std::mem::take(&mut batch);
-            if let Err(err) = insert_samples(&db, &table_name, inserts).await {
-                debug_error(err.context("error inserting samples"));
-            }
-        }
-    }
-
-    // If there are any uninserted rows after the channel closes, insert them now
-    if !batch.is_empty() {
-        if let Err(err) = insert_samples(&db, &table_name, batch).await {
-            debug_error(err.context("error inserting samples"));
-        }
-    }
-}
-
 /// Inserts a set of samples into the specified data table
 async fn insert_samples(
     db: &sqlx::postgres::PgPool,
@@ -448,6 +371,7 @@ mod schema {
     use anyhow::{Error, Result};
     use sqlx::prelude::*;
     use sqlx::Executor;
+
     use telemetry_core::error::debug_error;
 
     // Define constants as macros so that these schema names can be used with `concat!`

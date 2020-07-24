@@ -104,8 +104,10 @@ impl StandaloneStorage {
                 db_url = format!("{}?application_name=telemetry-bot", db_url);
             }
         }
-        let db_min_conn = num_cpus::get().max(1);
-        let db_max_conn = config.database_conn_per_cpu as usize * db_min_conn;
+        let db_min_conn = num_cpus::get()
+            .max(1)
+            .min(config.scrape_concurrency as usize);
+        let db_max_conn = config.scrape_concurrency;
 
         println!("Connecting to database...");
         let db = sqlx::postgres::PgPool::builder()

@@ -50,9 +50,6 @@ pub struct Config {
     /// e.g. "postgres://postgres@localhost/defaultdb"
     pub database_url: Option<String>,
 
-    /// The maximum number of database connections to allow at once to TimescaleDB.
-    pub database_conn_per_cpu: u8,
-
     /// When STORAGE_TYPE is "remote", this option is required.
     /// The url to send prometheus remote write requests too; it should include the path.
     /// e.g. "https://localhost/write"
@@ -96,10 +93,9 @@ impl Config {
             watch_telemetry_bot,
             scrape_interval: Duration::from_secs(env.scrape_interval),
             scrape_timeout: Duration::from_secs(env.scrape_timeout),
-            scrape_concurrency: if env.scrape_concurrency == 0 {
-                4096
-            } else {
-                env.scrape_concurrency
+            scrape_concurrency: match env.scrape_concurrency {
+                Some(0) | None => (5 * num_cpus::get().max(1)).min(u16::MAX as usize) as u16,
+                Some(x) => x,
             },
             scrape_labels: env
                 .scrape_labels
@@ -129,7 +125,6 @@ impl Config {
                 .map(|x| x.to_string())
                 .collect::<Vec<_>>(),
             database_url: env.database_url,
-            database_conn_per_cpu: 5,
             remote_write_url: env.remote_write_url,
         })
     }
@@ -168,12 +163,12 @@ struct Environment {
     scrape_interval: u64,
 
     /// How long (in seconds) to wait for "/metrics" requests
-    #[structopt(long, env = "SCRAPE_TIMEOUT", default_value = "5")]
+    #[structopt(long, env = "SCRAPE_TIMEOUT", default_value = "2")]
     scrape_timeout: u64,
 
     /// The max number of network sockets to use for "/metrics" requests
-    #[structopt(long, env = "SCRAPE_CONCURRENCY", default_value = "4096")]
-    scrape_concurrency: u16,
+    #[structopt(long, env = "SCRAPE_CONCURRENCY")]
+    scrape_concurrency: Option<u16>,
 
     /// A comma separated list of static labels to add to metrics
     #[structopt(long, env = "SCRAPE_LABELS", default_value = "")]

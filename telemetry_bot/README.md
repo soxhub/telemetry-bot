@@ -21,6 +21,7 @@ KUBERNETES_SERVICE_HOST="kubernetes.default.svc"
 ```sh
 STORAGE_TYPE=remote
 REMOTE_WRITE_URL="http://timescale-prometheus-connector:9201/write"
+SCRAPE_CONCURRENCY=4098
 SCRAPE_LABELS="environment=production"
 KUBERNETES_SERVICE_HOST="kubernetes.default.svc"
 ```
@@ -66,8 +67,17 @@ SCRAPE_LABELS
 
 SCRAPE_CONCURRENCY
 
-    The maximum number of network sockets to use for requests to "/metrics".
-    (default: 4096)
+    The maximum number of concurrent scrape requests to "/metrics" endpoints.
+
+    When using the "standalone" backend, this is also the number of database
+    connections used to write to the database.
+
+    (default: 5 x num cpus)
+
+SCRAPE_TIMEOUT
+
+    How long to wait (in seconds) before a "/metrics" request times out.
+    (default: 2 seconds)
 
 SCRAPE_INTERVAL
 
