@@ -15,6 +15,8 @@ pub struct DebugMetrics {
     write_count: AtomicUsize,
     write_errors: AtomicUsize,
     write_skips: AtomicUsize,
+    write_task_count: AtomicUsize,
+    write_task_peak: AtomicUsize,
     query_count: AtomicUsize,
     targets_active: AtomicUsize,
     targets_peak: AtomicUsize,
@@ -37,6 +39,8 @@ impl DebugMetrics {
             write_count: AtomicUsize::new(0),
             write_errors: AtomicUsize::new(0),
             write_skips: AtomicUsize::new(0),
+            write_task_count: AtomicUsize::new(0),
+            write_task_peak: AtomicUsize::new(0),
             query_count: AtomicUsize::new(0),
             targets_active: AtomicUsize::new(0),
             targets_peak: AtomicUsize::new(0),
@@ -130,6 +134,18 @@ impl DebugMetrics {
         self.response_bytes_used.fetch_sub(bytes, Ordering::Relaxed);
     }
 
+    pub fn write_task_started(&self) {
+        let concurrent = self.write_task_count.fetch_add(1, Ordering::SeqCst);
+        // TODO: Use `fetch_max` when it is stable
+        if concurrent > self.write_task_peak.load(Ordering::SeqCst) {
+            self.write_task_peak.store(concurrent, Ordering::SeqCst);
+        }
+    }
+
+    pub fn write_task_finished(&self) {
+        self.write_task_count.fetch_sub(1, Ordering::Relaxed);
+    }
+
     // Log the current metrics and reset the counters
     pub fn publish(&self) {
         let pod_count = self.pod_count.load(Ordering::Relaxed);
@@ -166,9 +182,13 @@ impl DebugMetrics {
         let write_count = self.write_count.swap(0, Ordering::Relaxed);
         let write_errors = self.write_errors.swap(0, Ordering::Relaxed);
         let write_skips = self.write_skips.swap(0, Ordering::Relaxed);
+        let write_task_curr = self.write_task_count.load(Ordering::Relaxed);
+        let write_task_peak = self
+            .write_task_peak
+            .swap(write_task_curr, Ordering::Relaxed);
         let sql_queries = self.query_count.swap(0, Ordering::Relaxed);
         println!(
-            "Debug: pods {} (used {}, peak {}) | polling (errors {}, resets {}) | scraped {} (errors {}, timeouts {}, disconnects {}) | writes {} (errors {}, skipped {}) | series {} (rss {}) | response bytes (used {}, peak {}) | sql (queries {})",
+            "Debug: pods {} (used {}, peak {}) | polling (errors {}, resets {}) | scraped {} (errors {}, timeouts {}, disconnects {}) | writes {} (errors {}, skipped {}) | series {} (rss {}) | response bytes (used {}, peak {}) | tasks (curr {}, peak {}) | sql (queries {})",
             pod_count,
             targets_active,
             targets_peak,
@@ -185,6 +205,8 @@ impl DebugMetrics {
             series_bytes,
             resp_bytes_used,
             resp_bytes_peak,
+            write_task_curr,
+            write_task_peak,
             sql_queries,
         );
     }

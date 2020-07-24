@@ -107,6 +107,8 @@ impl Connector {
         scraped: SampleSet<'_>,
         static_labels: &[(String, String)],
     ) -> (usize, Vec<Error>) {
+        DEBUG.write_task_started();
+
         let mut errors = Vec::new();
 
         // Collect samples as rows per table
@@ -185,6 +187,7 @@ impl Connector {
             }
         }
 
+        DEBUG.write_task_finished();
         (inserted, errors)
     }
 
