@@ -10,32 +10,20 @@ default = [
     "storage-remote-write",
     "storage-timescale-standalone",
 ]
-storage-remote-write = ["telemetry-remote-write"]
-storage-timescale-standalone = ["telemetry-standalone"]
+storage-remote-write = ["telemetry-core/storage-remote-write"]
+storage-timescale-standalone = ["telemetry-core/storage-timescale-standalone"]
 
 [dependencies]
 anyhow = "1.0.31"
-async-std = "1.6.2"
 async-trait = "0.1.35"
 chrono = "0.4.11"
 ctrlc = { version = "3.1.4", features = ["termination"] } # handle SIGINT (and SIGTERM)
 dotenv = "0.15.0"
 futures = "0.3.5"
 heck = "0.3.1"
-kube = { version = "0.35.1", default-features = false, features = ["rustls-tls"] }
+kube =  "0.35.1"
 num_cpus = "1.13.0"
-parallel-stream = "2.1.1"
 parking_lot = "0.11.0"
 piper = "0.1.3"
-sqlx = { version = "0.3.5", features = ["postgres", "tls"] }
 structopt = "0.3.15"
-
-# Base library
 telemetry-core = { path = "../telemetry_core" }
-
-# Storage dependencies
-telemetry-remote-write = { path = "../storage_remote_write", optional = true }
-telemetry-standalone = { path = "../storage_standalone", optional = true }
-
-# Enable compatibiltiy with `tokio`-based dependencies (the `kube` crate)
-smol = { version = "0.1.11", features = ["tokio02"] }

@@ -2,8 +2,6 @@
 members = [
     "telemetry_bot",
     "telemetry_core",
-    "storage_remote_write",
-    "storage_standalone",
 ]
 
 [profile.release]

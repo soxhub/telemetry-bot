@@ -4,19 +4,40 @@ version = "0.1.0"
 authors = ["Kevin Stenerson <kstenerson@auditboard.com>"]
 edition = "2018"
 
+[features]
+default = []
+
+ # TODO: Make storage-specific dependencies optional
+storage-remote-write = []
+storage-timescale-standalone = []
+
 [dependencies]
 anyhow = "1.0.31"
 arc-swap = "0.4.7"
-async-std = "1.6.2"
 chrono = "0.4.11"
 futures = "0.3.5"
 indexmap = "1.4.0"
 k8s-openapi = { version = "0.8.0", features = ["v1_18"] }
-kube = { version = "0.35.1", default-features = false, features = ["rustls-tls"] }
+kube =  "0.35.1"
 parking_lot = "0.11.0"
-surf = { version = "2.0.0-alpha.4", default_features = false, features = ["encoding", "h1-client"] }
+reqwest = { version = "0.10.8", features = ["json"] }
 thiserror = "1.0.20"
+tokio = "0.2.22"
 url = "2.1.1"
 
-# Enable compatibiltiy with `tokio`-based dependencies (the `kube` crate)
-smol = { version = "0.1.11", features = ["tokio02"] }
+# Storage: Standalone
+crossbeam-queue = "0.2.3"
+dashmap = "4.0.0-rc6"
+lasso = { version = "0.3.0", features = ["ahasher", "multi-threaded"] }
+native-tls = "0.2.4"
+postgres = "0.17.5"
+postgres-native-tls = "0.3.0"
+r2d2 = "0.8.9"
+r2d2_postgres = "0.16.0"
+serde_json = "1.0.56"
+semver = "0.10.0"
+unsigned-varint = "0.4.0"
+
+# Storage: Remote Write
+prost = "0.6.1"
+snap = "1.0.0"

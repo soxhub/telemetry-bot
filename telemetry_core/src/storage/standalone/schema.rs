@@ -9,7 +9,7 @@ use semver::Version;
 use std::sync::Arc;
 use std::time::Duration;
 
-use telemetry_core::error::debug_error;
+use crate::error::debug_error;
 
 type PgManager = PostgresConnectionManager<MakeTlsConnector>;
 type PgPool = r2d2::Pool<PgManager>;
@@ -67,7 +67,7 @@ macro_rules! define_migration {
     ($version:literal, $filename:literal) => {
         (
             $version.parse::<Version>().expect("invalid migration filename"),
-            build_migration(include_str!(concat!("../sql/versions/dev/", $version, "/", $filename))),
+            build_migration(include_str!(concat!("./sql/versions/dev/", $version, "/", $filename))),
         )
     }
 }
@@ -153,10 +153,10 @@ impl SchemaManager {
             // If the database version was none, run the pre-installation scripts.
             if db_version_str == "0.0.0" {
                 let preinstall = &[
-                    build_migration(include_str!("../sql/preinstall/001-users.sql")),
-                    build_migration(include_str!("../sql/preinstall/002-schemas.sql")),
-                    build_migration(include_str!("../sql/preinstall/003-tables.sql")),
-                    build_migration(include_str!("../sql/preinstall/004-matcher_operators.sql")),
+                    build_migration(include_str!("./sql/preinstall/001-users.sql")),
+                    build_migration(include_str!("./sql/preinstall/002-schemas.sql")),
+                    build_migration(include_str!("./sql/preinstall/003-tables.sql")),
+                    build_migration(include_str!("./sql/preinstall/004-matcher_operators.sql")),
                 ];
             }
             // Otherwise, upgrade to the current version
@@ -173,8 +173,8 @@ impl SchemaManager {
 
             // If any migrations were required, run the idempotent scripts.
             let idempotent = &[
-                build_migration(include_str!("../sql/idempotent/base.sql")),
-                build_migration(include_str!("../sql/idempotent/matcher-functions.sql")),
+                build_migration(include_str!("./sql/idempotent/base.sql")),
+                build_migration(include_str!("./sql/idempotent/matcher-functions.sql")),
             ];
             for migration in idempotent {
                 tx.batch_execute(&migration)?;

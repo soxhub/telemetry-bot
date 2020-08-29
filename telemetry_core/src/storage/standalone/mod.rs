@@ -1,3 +1,11 @@
+//! # Storage Backend: Standalone
+//!
+//! This storage backend writes metrics data to the same database schema
+//! (e.g. `_prom_catalog`, `prom_data`, `prom_series`, etc...) that is used by
+//! the TimescaleDB [Prometheus Connector](https://github.com/timescale/timescale-prometheus).
+//!
+
+mod encoding;
 mod schema;
 
 use anyhow::{Context, Error, Result};
@@ -10,8 +18,8 @@ use std::convert::TryInto;
 use std::fmt::Write;
 use std::sync::Arc;
 
-use telemetry_core::debug::DEBUG;
-use telemetry_core::parser::SampleSet;
+use crate::debug::DEBUG;
+use crate::parser::SampleSet;
 
 #[repr(transparent)]
 #[derive(Copy, Clone, Eq, PartialEq, Hash)]

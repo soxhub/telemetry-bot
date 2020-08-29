@@ -1,7 +1,12 @@
+//! # Storage Backend: Remote Write
+//!
+//! This storage backend uses the Prometheus remote write protocol.
+//!
+
 use anyhow::{Context, Result};
 use prost::Message;
 
-use telemetry_core::parser::Sample;
+use crate::parser::Sample;
 
 const MILLIS_PER_SECOND: i64 = 1000;
 
