@@ -104,27 +104,9 @@ impl StandaloneStorage {
                 db_url = format!("{}?application_name=telemetry-bot", db_url);
             }
         }
-        let db_min_conn = (num_cpus::get().max(1) * 2).min(config.scrape_concurrency as usize);
-        let db_max_conn = config.scrape_concurrency * 2;
-
-        println!("Connecting to database...");
-        let db = sqlx::postgres::PgPool::builder()
-            .min_size(db_min_conn as u32)
-            .max_size(db_max_conn as u32)
-            .max_lifetime(std::time::Duration::from_secs(60 * 30))
-            .idle_timeout(std::time::Duration::from_secs(60 * 5).max(config.scrape_interval * 5))
-            .connect_timeout(
-                std::time::Duration::from_secs(10)
-                    .max(config.scrape_timeout * 2)
-                    .min(config.scrape_interval),
-            )
-            .build(&db_url)
-            .await
-            .context("error connecting to timescaledb")?;
-        println!("Connected to {}", db_url);
 
         // Build storage
-        let connector = telemetry_standalone::Connector::new(db);
+        let connector = telemetry_standalone::Connector::new(&db_url);
         connector
             .resume()
             .await

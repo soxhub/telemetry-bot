@@ -21,7 +21,6 @@ ctrlc = { version = "3.1.4", features = ["termination"] } # handle SIGINT (and S
 dotenv = "0.15.0"
 futures = "0.3.5"
 heck = "0.3.1"
-kube =  "0.35.1"
 num_cpus = "1.13.0"
 parking_lot = "0.11.0"
 piper = "0.1.3"

@@ -63,16 +63,9 @@ async fn run(config: Config, shutdown: piper::Receiver<()>) -> Result<()> {
 
     // Collect the list of pods to be scraped for metrics
     let pods = if let Some(scrape_url) = &config.scrape_target {
-        let kube_client =
-            kube::Client::new(kube::Config::new("https://localhost".parse().unwrap()));
-        let pods = ScrapeList::shared(kube_client, Vec::new());
-        pods.update(vec![ScrapeTarget::new(
-            "default".into(),
-            scrape_url.into(),
-            Vec::new(),
-        )]);
         println!("Target: {}", scrape_url);
-        pods
+        let target = ScrapeTarget::new("default", scrape_url, Vec::new());
+        ScrapeList::from_vec(vec![target])
     } else {
         println!("Loading scrape targets...");
         let mut annotations = Vec::new();
@@ -82,10 +75,9 @@ async fn run(config: Config, shutdown: piper::Receiver<()>) -> Result<()> {
         if config.watch_telemetry_bot {
             annotations.push("telemetry.bot/scrape")
         }
-        let kube_client = kube::Client::try_default()
+        let pods = ScrapeList::from_kube_with(annotations)
             .await
-            .context("reading kubernetes api config")?;
-        let pods = ScrapeList::shared(kube_client, annotations);
+            .context("error reading kubernetes config")?;
         pods.refresh()
             .await
             .context("error listing prometheus pods")?;

@@ -1829,7 +1829,6 @@ dependencies = [
  "dotenv",
  "futures",
  "heck",
- "kube",
  "num_cpus",
  "parking_lot",
  "piper",

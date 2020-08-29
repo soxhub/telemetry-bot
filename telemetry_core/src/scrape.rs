@@ -48,13 +48,17 @@ impl Drop for ScrapeTarget {
 }
 
 impl ScrapeTarget {
-    pub fn new(name: String, url: String, labels: Vec<(&'static str, Option<String>)>) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        url: impl Into<String>,
+        labels: Vec<(&'static str, Option<String>)>,
+    ) -> Self {
         DEBUG.allocate_target();
 
         let timestamp = Utc::now().naive_utc().timestamp();
         ScrapeTarget {
-            name,
-            url,
+            name: name.into(),
+            url: url.into(),
             labels,
             last_scrape: AtomicI64::new(timestamp),
             _dont_use_struct_literal: PhantomData,
@@ -150,6 +154,19 @@ pub struct ScrapeList {
 }
 
 impl ScrapeList {
+    pub async fn from_kube_with(annotations: Vec<&'static str>) -> Result<Arc<Self>, kube::Error> {
+        let kube_client = kube::Client::try_default().await?;
+        Ok(ScrapeList::shared(kube_client, annotations))
+    }
+
+    pub fn from_vec(targets: Vec<ScrapeTarget>) -> Arc<Self> {
+        let kube_client =
+            kube::Client::new(kube::Config::new("https://localhost".parse().unwrap()));
+        let list = ScrapeList::shared(kube_client, Vec::new());
+        list.update(targets);
+        list
+    }
+
     pub fn shared(client: kube::Client, annotations: Vec<&'static str>) -> Arc<Self> {
         let api = kube::Api::all(client);
         let map = Mutex::new(IndexMap::new());
