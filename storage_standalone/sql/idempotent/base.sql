@@ -8,170 +8,6 @@
 --NOTES
 --This code assumes that table names can only be 63 chars long
 
-DO $$
-    BEGIN
-        CREATE ROLE prom_reader;
-    EXCEPTION WHEN duplicate_object THEN
-        RAISE NOTICE 'role prom_reader already exists, skipping create';
-        RETURN;
-    END
-$$;
-DO $$
-    BEGIN
-        CREATE ROLE prom_writer;
-    EXCEPTION WHEN duplicate_object THEN
-        RAISE NOTICE 'role prom_writer already exists, skipping create';
-        RETURN;
-    END
-$$;
-GRANT prom_reader TO prom_writer;
-
-CREATE SCHEMA IF NOT EXISTS SCHEMA_CATALOG; -- catalog tables + internal functions
-GRANT USAGE ON SCHEMA SCHEMA_CATALOG TO prom_reader;
-GRANT SELECT ON ALL TABLES IN SCHEMA SCHEMA_CATALOG TO prom_reader;
-ALTER DEFAULT PRIVILEGES IN SCHEMA SCHEMA_CATALOG GRANT SELECT ON TABLES TO prom_reader;
-GRANT USAGE ON SCHEMA SCHEMA_CATALOG TO prom_writer;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA SCHEMA_CATALOG TO prom_writer;
-ALTER DEFAULT PRIVILEGES IN SCHEMA SCHEMA_CATALOG GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO prom_writer;
-
-CREATE SCHEMA IF NOT EXISTS SCHEMA_PROM; -- public functions
-GRANT USAGE ON SCHEMA SCHEMA_PROM TO prom_reader;
-
-CREATE SCHEMA IF NOT EXISTS SCHEMA_EXT; -- optimized versions of functions created by the extension
-GRANT USAGE ON SCHEMA SCHEMA_EXT TO prom_reader;
-
-CREATE SCHEMA IF NOT EXISTS SCHEMA_SERIES; -- series views
-GRANT USAGE ON SCHEMA SCHEMA_SERIES TO prom_reader;
-GRANT SELECT ON ALL TABLES IN SCHEMA SCHEMA_SERIES TO prom_reader;
-ALTER DEFAULT PRIVILEGES IN SCHEMA SCHEMA_SERIES GRANT SELECT ON TABLES TO prom_reader;
-
-CREATE SCHEMA IF NOT EXISTS SCHEMA_METRIC; -- metric views
-GRANT USAGE ON SCHEMA SCHEMA_METRIC TO prom_reader;
-GRANT SELECT ON ALL TABLES IN SCHEMA SCHEMA_METRIC TO prom_reader;
-ALTER DEFAULT PRIVILEGES IN SCHEMA SCHEMA_METRIC GRANT SELECT ON TABLES TO prom_reader;
-
-CREATE SCHEMA IF NOT EXISTS SCHEMA_DATA;
-GRANT USAGE ON SCHEMA SCHEMA_DATA TO prom_reader;
-GRANT SELECT ON ALL TABLES IN SCHEMA SCHEMA_DATA TO prom_reader;
-ALTER DEFAULT PRIVILEGES IN SCHEMA SCHEMA_DATA GRANT SELECT ON TABLES TO prom_reader;
-GRANT USAGE ON SCHEMA SCHEMA_DATA TO prom_writer;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA SCHEMA_DATA TO prom_writer;
-ALTER DEFAULT PRIVILEGES IN SCHEMA SCHEMA_DATA GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO prom_writer;
-
-CREATE SCHEMA IF NOT EXISTS SCHEMA_DATA_SERIES;
-GRANT USAGE ON SCHEMA SCHEMA_DATA_SERIES TO prom_reader;
-GRANT SELECT ON ALL TABLES IN SCHEMA SCHEMA_DATA_SERIES TO prom_reader;
-ALTER DEFAULT PRIVILEGES IN SCHEMA SCHEMA_DATA_SERIES GRANT SELECT ON TABLES TO prom_reader;
-GRANT USAGE ON SCHEMA SCHEMA_DATA_SERIES TO prom_writer;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA SCHEMA_DATA_SERIES TO prom_writer;
-ALTER DEFAULT PRIVILEGES IN SCHEMA SCHEMA_DATA_SERIES GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO prom_writer;
-
-
-CREATE SCHEMA IF NOT EXISTS SCHEMA_INFO;
-GRANT USAGE ON SCHEMA SCHEMA_INFO TO prom_reader;
-GRANT SELECT ON ALL TABLES IN SCHEMA SCHEMA_INFO TO prom_reader;
-ALTER DEFAULT PRIVILEGES IN SCHEMA SCHEMA_INFO GRANT SELECT ON TABLES TO prom_reader;
-
-CREATE DOMAIN SCHEMA_PROM.label_array AS int[] NOT NULL;
-
--- the timescale_prometheus_extra extension contains optimized version of some
--- of our functions and operators. To ensure the correct version of the are
--- used, SCHEMA_EXT must be before all of our other schemas in the search path
-DO $$
-DECLARE
-   new_path text;
-BEGIN
-   new_path := current_setting('search_path') || format(',%L,%L,%L,%L', 'SCHEMA_EXT', 'SCHEMA_PROM', 'SCHEMA_METRIC', 'SCHEMA_CATALOG');
-   execute format('ALTER DATABASE %I SET search_path = %s', current_database(), new_path);
-   execute format('SET search_path = %s', new_path);
-END
-$$;
-
-
------------------------
--- Table definitions --
------------------------
-
-CREATE TABLE public.prom_installation_info (
-    key TEXT PRIMARY KEY,
-    value TEXT
-);
-
-INSERT INTO public.prom_installation_info(key, value) VALUES
-    ('catalog schema',        'SCHEMA_CATALOG'),
-    ('prometheus API schema', 'SCHEMA_PROM'),
-    ('extension schema',      'SCHEMA_EXT'),
-    ('series schema',         'SCHEMA_SERIES'),
-    ('metric schema',         'SCHEMA_METRIC'),
-    ('data schema',           'SCHEMA_DATA'),
-    ('information schema',    'SCHEMA_INFO');
-
-
-CREATE TABLE SCHEMA_CATALOG.series (
-    id bigint NOT NULL,
-    metric_id int NOT NULL,
-    labels SCHEMA_PROM.label_array NOT NULL --labels are globally unique because of how partitions are defined
-) PARTITION BY LIST(metric_id);
-CREATE INDEX series_labels_id ON SCHEMA_CATALOG.series USING GIN (labels);
-CREATE SEQUENCE SCHEMA_CATALOG.series_id;
-
-CREATE TABLE SCHEMA_CATALOG.label (
-    id serial CHECK (id > 0),
-    key TEXT,
-    value text,
-    PRIMARY KEY (id) INCLUDE (key, value),
-    UNIQUE (key, value) INCLUDE (id)
-);
-
---This table creates a unique mapping
---between label keys and their column names across metrics.
---This is done for usability of column name, especially for
--- long keys that get cut off.
-CREATE TABLE SCHEMA_CATALOG.label_key(
-    id SERIAL,
-    key TEXT,
-    value_column_name NAME,
-    id_column_name NAME,
-    PRIMARY KEY (id),
-    UNIQUE(key)
-);
-
-CREATE TABLE SCHEMA_CATALOG.label_key_position (
-    metric_name text, --references metric.metric_name NOT metric.id for performance reasons
-    key TEXT, --NOT label_key.id for performance reasons.
-    pos int,
-    UNIQUE (metric_name, key) INCLUDE (pos)
-);
-
-CREATE TABLE SCHEMA_CATALOG.metric (
-    id SERIAL PRIMARY KEY,
-    metric_name text NOT NULL,
-    table_name name NOT NULL,
-    creation_completed BOOLEAN NOT NULL DEFAULT false,
-    default_chunk_interval BOOLEAN NOT NULL DEFAULT true,
-    retention_period INTERVAL DEFAULT NULL, --NULL to use the default retention_period
-    UNIQUE (metric_name) INCLUDE (table_name),
-    UNIQUE(table_name)
-);
-
-CREATE TABLE SCHEMA_CATALOG.default (
-    key TEXT PRIMARY KEY,
-    value TEXT
-);
-
-INSERT INTO SCHEMA_CATALOG.default(key,value) VALUES
-('chunk_interval', (INTERVAL '8 hours')::text),
-('retention_period', (90 * INTERVAL '1 day')::text);
-
---Canonical lock ordering:
---metrics
---data table
---labels
---series parent
---series partition
-
---constraints:
---- The prom_metric view takes locks in the order: data table, series partition.
 
 CREATE OR REPLACE FUNCTION SCHEMA_CATALOG.get_default_chunk_interval()
     RETURNS INTERVAL
@@ -189,6 +25,18 @@ $func$
 LANGUAGE SQL STABLE PARALLEL SAFE;
 GRANT EXECUTE ON FUNCTION SCHEMA_CATALOG.get_default_retention_period() TO prom_reader;
 
+
+--Canonical lock ordering:
+--metrics
+--data table
+--labels
+--series parent
+--series partition
+
+--constraints:
+--- The prom_metric view takes locks in the order: data table, series partition.
+
+
 --This procedure finalizes the creation of a metric. The first part of
 --metric creation happens in make_metric_table and the final part happens here.
 --We split metric creation into two parts to minimize latency during insertion
@@ -204,7 +52,7 @@ GRANT EXECUTE ON FUNCTION SCHEMA_CATALOG.get_default_retention_period() TO prom_
 --is insignificant in practice.
 --
 --lock-order: metric table, data_table, series parent, series partition
-CREATE PROCEDURE SCHEMA_CATALOG.finalize_metric_creation()
+CREATE OR REPLACE PROCEDURE SCHEMA_CATALOG.finalize_metric_creation()
 AS $proc$
 DECLARE
     r RECORD;
@@ -232,7 +80,7 @@ BEGIN
             ALTER TABLE SCHEMA_DATA.%I SET (
                 timescaledb.compress,
                 timescaledb.compress_segmentby = 'series_id',
-                timescaledb.compress_orderby = 'time'
+                timescaledb.compress_orderby = 'time, value'
             ); $$, r.table_name);
 
         --chunks where the end time is before now()-1 hour will be compressed
@@ -271,9 +119,9 @@ CREATE OR REPLACE FUNCTION SCHEMA_CATALOG.make_metric_table()
 DECLARE
   label_id INT;
 BEGIN
-   EXECUTE format('CREATE TABLE SCHEMA_DATA.%I(time TIMESTAMPTZ NOT NULL, value DOUBLE PRECISION, series_id INT NOT NULL)',
+   EXECUTE format('CREATE TABLE SCHEMA_DATA.%I(time TIMESTAMPTZ NOT NULL, value DOUBLE PRECISION NOT NULL, series_id BIGINT NOT NULL)',
                     NEW.table_name);
-   EXECUTE format('CREATE INDEX data_series_id_time_%s ON SCHEMA_DATA.%I (series_id, time) INCLUDE (value)',
+   EXECUTE format('CREATE UNIQUE INDEX data_series_id_time_%s ON SCHEMA_DATA.%I (series_id, time) INCLUDE (value)',
                     NEW.id, NEW.table_name);
    PERFORM create_hypertable(format('SCHEMA_DATA.%I', NEW.table_name), 'time',
                              chunk_time_interval=>SCHEMA_CATALOG.get_default_chunk_interval(),
@@ -300,12 +148,11 @@ $func$
 LANGUAGE PLPGSQL VOLATILE;
 GRANT EXECUTE ON FUNCTION SCHEMA_CATALOG.make_metric_table() TO prom_writer;
 
+DROP TRIGGER IF EXISTS make_metric_table_trigger ON SCHEMA_CATALOG.metric CASCADE;
 CREATE TRIGGER make_metric_table_trigger
     AFTER INSERT ON SCHEMA_CATALOG.metric
     FOR EACH ROW
     EXECUTE PROCEDURE SCHEMA_CATALOG.make_metric_table();
-
-
 
 
 ------------------------
@@ -743,15 +590,25 @@ COMMENT ON FUNCTION SCHEMA_CATALOG.get_or_create_label_array(text, text[], text[
 IS 'converts a metric name, array of keys, and array of values to a label array';
 GRANT EXECUTE ON FUNCTION SCHEMA_CATALOG.get_or_create_label_array(TEXT, text[], text[]) TO prom_writer;
 
--- Returns keys and values for a label_array
+-- Returns ids, keys and values for a label_array
+-- the order may not be the same as the original labels
 -- This function needs to be optimized for performance
-CREATE OR REPLACE FUNCTION SCHEMA_PROM.key_value_array(labels SCHEMA_PROM.label_array, OUT keys text[], OUT vals text[])
+CREATE OR REPLACE FUNCTION SCHEMA_PROM.labels_info(INOUT labels INT[], OUT keys text[], OUT vals text[])
 AS $$
     SELECT
-        array_agg(l.key), array_agg(l.value)
+        array_agg(l.id), array_agg(l.key), array_agg(l.value)
     FROM
       label_unnest(labels) label_id
       INNER JOIN SCHEMA_CATALOG.label l ON (l.id = label_id)
+$$
+LANGUAGE SQL STABLE PARALLEL SAFE;
+COMMENT ON FUNCTION SCHEMA_PROM.labels_info(INT[])
+IS 'converts an array of label ids to three arrays: one for ids, one for keys and another for values';
+GRANT EXECUTE ON FUNCTION SCHEMA_PROM.labels_info(INT[]) TO prom_reader;
+
+CREATE OR REPLACE FUNCTION SCHEMA_PROM.key_value_array(labels SCHEMA_PROM.label_array, OUT keys text[], OUT vals text[])
+AS $$
+    SELECT keys, vals FROM SCHEMA_PROM.labels_info(labels)
 $$
 LANGUAGE SQL STABLE PARALLEL SAFE;
 COMMENT ON FUNCTION SCHEMA_PROM.key_value_array(SCHEMA_PROM.label_array)
@@ -810,10 +667,10 @@ LANGUAGE PLPGSQL VOLATILE;
 GRANT EXECUTE ON FUNCTION SCHEMA_CATALOG.create_series(int, name, SCHEMA_PROM.label_array) TO prom_writer;
 
 -- There shouldn't be a need to have a read only version of this as we'll use
--- the eq or other matcher functions to find series ids like this. However, 
+-- the eq or other matcher functions to find series ids like this. However,
 -- there are possible use cases that need the series id directly for performance
--- that we might want to see if we need to support, in which case a 
--- read only version might be useful in future. 
+-- that we might want to see if we need to support, in which case a
+-- read only version might be useful in future.
 CREATE OR REPLACE  FUNCTION SCHEMA_CATALOG.get_or_create_series_id(label jsonb)
 RETURNS BIGINT AS $$
 DECLARE
@@ -1090,7 +947,7 @@ BEGIN
         WHERE id IN (SELECT * FROM confirmed_drop_labels);
     $query$, metric_table) USING label_array;
 
-   PERFORM drop_chunks(table_name=>metric_table, schema_name=> 'SCHEMA_DATA', older_than=>older_than);
+   PERFORM drop_chunks(table_name=>metric_table, schema_name=> 'SCHEMA_DATA', older_than=>older_than, cascade_to_materializations=>FALSE);
    RETURN true;
 END
 $func$
@@ -1113,8 +970,7 @@ $$
 LANGUAGE SQL STABLE;
 GRANT EXECUTE ON FUNCTION SCHEMA_CATALOG.get_metrics_that_need_drop_chunk() TO prom_reader;
 
---public procedure to be called by cron
-CREATE PROCEDURE SCHEMA_PROM.drop_chunks()
+CREATE OR REPLACE PROCEDURE SCHEMA_CATALOG.execute_data_retention_policy()
 AS $$
 DECLARE
     r RECORD;
@@ -1145,8 +1001,20 @@ BEGIN
     END LOOP;
 END;
 $$ LANGUAGE PLPGSQL;
-COMMENT ON PROCEDURE SCHEMA_PROM.drop_chunks()
-IS 'drops data according to the data retention policy. This procedure should be run regularly in a cron job';
+COMMENT ON PROCEDURE SCHEMA_CATALOG.execute_data_retention_policy()
+IS 'drops old data according to the data retention policy. This procedure should be run regularly in a cron job';
+
+--public procedure to be called by cron
+--right now just does data retention but name is generic so that
+--we can add stuff later without needing people to change their cron scripts
+CREATE OR REPLACE PROCEDURE SCHEMA_PROM.execute_maintenance()
+AS $$
+BEGIN
+    CALL SCHEMA_CATALOG.execute_data_retention_policy();
+END;
+$$ LANGUAGE PLPGSQL;
+COMMENT ON PROCEDURE SCHEMA_PROM.execute_maintenance()
+IS 'Execute maintenance tasks like dropping data according to retention policy. This procedure should be run regularly in a cron job';
 
 CREATE OR REPLACE FUNCTION SCHEMA_PROM.is_stale_marker(value double precision)
 RETURNS BOOLEAN
@@ -1283,193 +1151,10 @@ $func$
 LANGUAGE PLPGSQL VOLATILE;
 GRANT EXECUTE ON FUNCTION SCHEMA_CATALOG.create_metric_view(text) TO prom_writer;
 
-----------------------------------
--- Label selectors and matchers --
-----------------------------------
-
-CREATE DOMAIN SCHEMA_PROM.matcher_positive AS int[] NOT NULL;
-CREATE DOMAIN SCHEMA_PROM.matcher_negative AS int[] NOT NULL;
-CREATE DOMAIN SCHEMA_PROM.label_key AS TEXT NOT NULL;
-CREATE DOMAIN SCHEMA_PROM.pattern AS TEXT NOT NULL;
-
-CREATE OR REPLACE FUNCTION SCHEMA_CATALOG.count_jsonb_keys(j jsonb)
-RETURNS INT
-AS $func$
-    SELECT count(*)::int from (SELECT jsonb_object_keys(j)) v;
-$func$
-LANGUAGE SQL IMMUTABLE PARALLEL SAFE;
-GRANT EXECUTE ON FUNCTION SCHEMA_CATALOG.count_jsonb_keys(jsonb) TO prom_reader;
-
-CREATE OR REPLACE FUNCTION SCHEMA_PROM.matcher(labels jsonb)
-RETURNS SCHEMA_PROM.matcher_positive
-AS $func$
-    SELECT ARRAY(
-           SELECT coalesce(l.id, -1) -- -1 indicates no such label
-           FROM label_jsonb_each_text(labels-'__name__') e
-           LEFT JOIN SCHEMA_CATALOG.label l
-               ON (l.key = e.key AND l.value = e.value)
-        )::SCHEMA_PROM.matcher_positive
-$func$
-LANGUAGE SQL STABLE PARALLEL SAFE;
-COMMENT ON FUNCTION SCHEMA_PROM.matcher(jsonb)
-IS 'returns a matcher for the JSONB, __name__ is ignored. The matcher can be used to match against a label array using @> or ? operators';
-GRANT EXECUTE ON FUNCTION SCHEMA_PROM.matcher(jsonb) TO prom_reader;
-
-
-
----------------- eq functions ------------------
-
-CREATE OR REPLACE FUNCTION SCHEMA_PROM.eq(labels1 SCHEMA_PROM.label_array, labels2 SCHEMA_PROM.label_array)
-RETURNS BOOLEAN
-AS $func$
-    --assumes labels have metric name in position 1 and have no duplicate entries
-    SELECT array_length(labels1, 1) = array_length(labels2, 1) AND labels1 @> labels2[2:]
-$func$
-LANGUAGE SQL IMMUTABLE PARALLEL SAFE;
-COMMENT ON FUNCTION SCHEMA_PROM.eq(SCHEMA_PROM.label_array, SCHEMA_PROM.label_array)
-IS 'returns true if two label arrays are equal, ignoring the metric name';
-GRANT EXECUTE ON FUNCTION SCHEMA_PROM.eq(SCHEMA_PROM.label_array, SCHEMA_PROM.label_array) TO prom_reader;
-
-CREATE OR REPLACE FUNCTION SCHEMA_PROM.eq(labels1 SCHEMA_PROM.label_array, matchers SCHEMA_PROM.matcher_positive)
-RETURNS BOOLEAN
-AS $func$
-    --assumes no duplicate entries
-     SELECT array_length(labels1, 1) = (array_length(matchers, 1) + 1)
-            AND labels1 @> matchers
-$func$
-LANGUAGE SQL IMMUTABLE PARALLEL SAFE;
-COMMENT ON FUNCTION SCHEMA_PROM.eq(SCHEMA_PROM.label_array, SCHEMA_PROM.matcher_positive)
-IS 'returns true if the label array and matchers are equal, there should not be a matcher for the metric name';
-GRANT EXECUTE ON FUNCTION SCHEMA_PROM.eq(SCHEMA_PROM.label_array, SCHEMA_PROM.matcher_positive) TO prom_reader;
-
-CREATE OR REPLACE FUNCTION SCHEMA_PROM.eq(labels SCHEMA_PROM.label_array, json_labels jsonb)
-RETURNS BOOLEAN
-AS $func$
-    --assumes no duplicate entries
-    --do not call eq(label_array, matchers) to allow inlining
-     SELECT array_length(labels, 1) = (SCHEMA_CATALOG.count_jsonb_keys(json_labels-'__name__') + 1)
-            AND labels @> SCHEMA_PROM.matcher(json_labels)
-$func$
-LANGUAGE SQL STABLE PARALLEL SAFE;
-COMMENT ON FUNCTION SCHEMA_PROM.eq(SCHEMA_PROM.label_array, jsonb)
-IS 'returns true if the labels and jsonb are equal, ignoring the metric name';
-GRANT EXECUTE ON FUNCTION SCHEMA_PROM.eq(SCHEMA_PROM.label_array, jsonb) TO prom_reader;
-
---------------------- op @> ------------------------
-
-CREATE OR REPLACE FUNCTION SCHEMA_CATALOG.label_contains(labels SCHEMA_PROM.label_array, json_labels jsonb)
-RETURNS BOOLEAN
-AS $func$
-    SELECT labels @> SCHEMA_PROM.matcher(json_labels)
-$func$
-LANGUAGE SQL STABLE PARALLEL SAFE;
-GRANT EXECUTE ON FUNCTION SCHEMA_CATALOG.label_contains(SCHEMA_PROM.label_array, jsonb) TO prom_reader;
-
-CREATE OPERATOR SCHEMA_PROM.@> (
-    LEFTARG = SCHEMA_PROM.label_array,
-    RIGHTARG = jsonb,
-    FUNCTION = SCHEMA_CATALOG.label_contains
-);
-
---------------------- op ? ------------------------
-
-CREATE OR REPLACE FUNCTION SCHEMA_CATALOG.label_match(labels SCHEMA_PROM.label_array, matchers SCHEMA_PROM.matcher_positive)
-RETURNS BOOLEAN
-AS $func$
-    SELECT labels && matchers
-$func$
-LANGUAGE SQL IMMUTABLE PARALLEL SAFE;
-GRANT EXECUTE ON FUNCTION SCHEMA_CATALOG.label_match(SCHEMA_PROM.label_array, SCHEMA_PROM.matcher_positive) TO prom_reader;
-
-CREATE OPERATOR SCHEMA_PROM.? (
-    LEFTARG = SCHEMA_PROM.label_array,
-    RIGHTARG = SCHEMA_PROM.matcher_positive,
-    FUNCTION = SCHEMA_CATALOG.label_match
-);
-
-CREATE OR REPLACE FUNCTION SCHEMA_CATALOG.label_match(labels SCHEMA_PROM.label_array, matchers SCHEMA_PROM.matcher_negative)
-RETURNS BOOLEAN
-AS $func$
-    SELECT NOT (labels && matchers)
-$func$
-LANGUAGE SQL IMMUTABLE PARALLEL SAFE;
-GRANT EXECUTE ON FUNCTION SCHEMA_CATALOG.label_match(SCHEMA_PROM.label_array, SCHEMA_PROM.matcher_negative) TO prom_reader;
-
-CREATE OPERATOR SCHEMA_PROM.? (
-    LEFTARG = SCHEMA_PROM.label_array,
-    RIGHTARG = SCHEMA_PROM.matcher_negative,
-    FUNCTION = SCHEMA_CATALOG.label_match
-);
-
---------------------- op == !== ==~ !=~ ------------------------
-
-CREATE OR REPLACE FUNCTION SCHEMA_CATALOG.label_find_key_equal(key_to_match SCHEMA_PROM.label_key, pat SCHEMA_PROM.pattern)
-RETURNS SCHEMA_PROM.matcher_positive
-AS $func$
-    SELECT COALESCE(array_agg(l.id), array[]::int[])::SCHEMA_PROM.matcher_positive
-    FROM SCHEMA_CATALOG.label l
-    WHERE l.key = key_to_match and l.value = pat
-$func$
-LANGUAGE SQL STABLE PARALLEL SAFE;
-GRANT EXECUTE ON FUNCTION SCHEMA_CATALOG.label_find_key_equal(SCHEMA_PROM.label_key, SCHEMA_PROM.pattern) TO prom_reader;
-
-CREATE OR REPLACE FUNCTION SCHEMA_CATALOG.label_find_key_not_equal(key_to_match SCHEMA_PROM.label_key, pat SCHEMA_PROM.pattern)
-RETURNS SCHEMA_PROM.matcher_negative
-AS $func$
-    SELECT COALESCE(array_agg(l.id), array[]::int[])::SCHEMA_PROM.matcher_negative
-    FROM SCHEMA_CATALOG.label l
-    WHERE l.key = key_to_match and l.value = pat
-$func$
-LANGUAGE SQL STABLE PARALLEL SAFE;
-GRANT EXECUTE ON FUNCTION SCHEMA_CATALOG.label_find_key_not_equal(SCHEMA_PROM.label_key, SCHEMA_PROM.pattern) TO prom_reader;
-
-CREATE OR REPLACE FUNCTION SCHEMA_CATALOG.label_find_key_regex(key_to_match SCHEMA_PROM.label_key, pat SCHEMA_PROM.pattern)
-RETURNS SCHEMA_PROM.matcher_positive
-AS $func$
-    SELECT COALESCE(array_agg(l.id), array[]::int[])::SCHEMA_PROM.matcher_positive
-    FROM SCHEMA_CATALOG.label l
-    WHERE l.key = key_to_match and l.value ~ pat
-$func$
-LANGUAGE SQL STABLE PARALLEL SAFE;
-GRANT EXECUTE ON FUNCTION SCHEMA_CATALOG.label_find_key_regex(SCHEMA_PROM.label_key, SCHEMA_PROM.pattern) TO prom_reader;
-
-CREATE OR REPLACE FUNCTION SCHEMA_CATALOG.label_find_key_not_regex(key_to_match SCHEMA_PROM.label_key, pat SCHEMA_PROM.pattern)
-RETURNS SCHEMA_PROM.matcher_negative
-AS $func$
-    SELECT COALESCE(array_agg(l.id), array[]::int[])::SCHEMA_PROM.matcher_negative
-    FROM SCHEMA_CATALOG.label l
-    WHERE l.key = key_to_match and l.value ~ pat
-$func$
-LANGUAGE SQL STABLE PARALLEL SAFE;
-GRANT EXECUTE ON FUNCTION SCHEMA_CATALOG.label_find_key_not_regex(SCHEMA_PROM.label_key, SCHEMA_PROM.pattern) TO prom_reader;
-
-CREATE OPERATOR SCHEMA_PROM.== (
-    LEFTARG = SCHEMA_PROM.label_key,
-    RIGHTARG = SCHEMA_PROM.pattern,
-    FUNCTION = SCHEMA_CATALOG.label_find_key_equal
-);
-
-CREATE OPERATOR SCHEMA_PROM.!== (
-    LEFTARG = SCHEMA_PROM.label_key,
-    RIGHTARG = SCHEMA_PROM.pattern,
-    FUNCTION = SCHEMA_CATALOG.label_find_key_not_equal
-);
-
-CREATE OPERATOR SCHEMA_PROM.==~ (
-    LEFTARG = SCHEMA_PROM.label_key,
-    RIGHTARG = SCHEMA_PROM.pattern,
-    FUNCTION = SCHEMA_CATALOG.label_find_key_regex
-);
-
-CREATE OPERATOR SCHEMA_PROM.!=~ (
-    LEFTARG = SCHEMA_PROM.label_key,
-    RIGHTARG = SCHEMA_PROM.pattern,
-    FUNCTION = SCHEMA_CATALOG.label_find_key_not_regex
-);
 
 --------------------------------- Views --------------------------------
 
-CREATE VIEW SCHEMA_INFO.metric AS
+CREATE OR REPLACE VIEW SCHEMA_INFO.metric AS
    SELECT
      m.id,
      m.metric_name,
@@ -1499,7 +1184,7 @@ CREATE VIEW SCHEMA_INFO.metric AS
    LEFT JOIN _timescaledb_catalog.hypertable h ON
               (h.schema_name = 'SCHEMA_DATA' AND h.table_name = m.table_name);
 
-CREATE VIEW SCHEMA_INFO.label AS
+CREATE OR REPLACE VIEW SCHEMA_INFO.label AS
   SELECT
     lk.key,
     lk.value_column_name,
@@ -1509,11 +1194,29 @@ CREATE VIEW SCHEMA_INFO.label AS
   FROM SCHEMA_CATALOG.label_key lk;
 
 
+--this should the only thing run inside the transaction. It's important the txn ends after calling this function
+--to release locks
+CREATE OR REPLACE FUNCTION SCHEMA_CATALOG.delay_compression_job(ht_table name, new_start timestamptz) RETURNS VOID
+AS $$
+DECLARE
+  bgw_job_id int;
+BEGIN
+        SELECT job_id INTO bgw_job_id
+		FROM _timescaledb_config.bgw_policy_compress_chunks p
+		INNER JOIN _timescaledb_catalog.hypertable h ON (h.id = p.hypertable_id)
+		WHERE h.schema_name = 'SCHEMA_DATA' and h.table_name = ht_table;
 
+        --alter job schedule is not currently concurrency-safe (timescaledb issue #2165)
+        PERFORM pg_advisory_xact_lock(12377, bgw_job_id);
+
+		PERFORM alter_job_schedule(bgw_job_id, next_start=>GREATEST(new_start, (SELECT next_start FROM timescaledb_information.policy_stats WHERE job_id = bgw_job_id)));
+END
+$$
+LANGUAGE PLPGSQL;
 
 --Decompression should take place in a procedure because we don't want locks held across
 --decompress_chunk calls since that function takes some heavier locks at the end.
-CREATE PROCEDURE SCHEMA_CATALOG.decompress_chunks_after(metric_table NAME, min_time TIMESTAMPTZ)
+CREATE OR REPLACE PROCEDURE SCHEMA_CATALOG.decompress_chunks_after(metric_table NAME, min_time TIMESTAMPTZ)
 AS $$
 DECLARE
     chunk_row _timescaledb_catalog.chunk;
@@ -1539,8 +1242,19 @@ BEGIN
         AND c.compressed_chunk_id IS NOT NULL
         ORDER BY ds.range_start
     LOOP
-        RAISE NOTICE 'Timescale-Prometheus is decompressing chunk: %.%', chunk_row.schema_name, chunk_row.table_name;
-        PERFORM decompress_chunk(format('%I.%I', chunk_row.schema_name, chunk_row.table_name)::regclass);
+
+        --lock the chunk exclusive.
+        EXECUTE format('LOCK %I.%I;', chunk_row.schema_name, chunk_row.table_name);
+        --double check it's still compressed.
+        PERFORM c.*
+        FROM _timescaledb_catalog.chunk c
+        WHERE c.id = chunk_row.id AND c.compressed_chunk_id IS NOT NULL;
+
+        IF FOUND THEN
+            RAISE NOTICE 'Timescale-Prometheus is decompressing chunk: %.%', chunk_row.schema_name, chunk_row.table_name;
+            PERFORM decompress_chunk(format('%I.%I', chunk_row.schema_name, chunk_row.table_name)::regclass);
+        END IF;
+
         COMMIT;
     END LOOP;
 END;
